@@ -1,0 +1,11 @@
+MetaTrader5
+pandas
+numpy
+torch
+vectorbt
+SQLAlchemy
+git+https://github.com/xgboosted/pandas-ta-classic.git
+python-telegram-bot
+PyYAML
+schedule
+requests

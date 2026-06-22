@@ -1,0 +1,9 @@
+venv/
+__pycache__/
+*.pyc
+.env
+data/
+models/versions/
+models/learning/
+!models/learning/model_demo.pt
+!data/.keep

@@ -1,9 +1,11 @@
 # 🤖 GoldBot 4.0 - Advanced AI Trading System
 
-GoldBot is an automated, AI-driven trading system designed specifically for the XAUUSD (Gold) pair. It combines a deep learning Bidirectional LSTM model with an Attention mechanism, multiple technical/fundamental filters, and an ensemble of traditional algorithmic strategies (Silver Bullet, Asian Range, SGE, PO3, Overlap Scalper) orchestrated by a Dynamic Strategy Selector.
+GoldBot is an automated, AI-driven trading system designed specifically for the XAUUSD (Gold) pair. It combines a deep learning Bidirectional LSTM model with an Attention mechanism, multiple technical/fundamental filters, and an ensemble of 7 traditional algorithmic strategies (Silver Bullet, Asian Range, SGE, PO3, Overlap Scalper, Trend Following, and Mean Reversion) orchestrated by a Dynamic Strategy Selector.
 
 ## 🌟 Key Features
 - **AI-Powered:** 3-layer Bi-LSTM with Attention mechanism trained on 10 years of MTF data.
+- **7 Core Strategies:** Dynamically selects between Silver Bullet, Asian Range, SGE, PO3, Overlap Scalper, Trend Follow, and Mean Reversion.
+- **24/7 Operations:** Built to run continuously with automated recovery, VPS optimization, and NSSM support.
 - **Online Learning:** The model continuously learns from recent trades and features a rollback mechanism if performance drops.
 - **Dynamic Strategy Selector:** Routes capital to the most profitable strategy based on current market regime and session.
 - **Premium Dashboard:** Real-time web dashboard for tracking equity, performance, and current active signals.
@@ -125,4 +127,36 @@ nssm restart GoldBot_Main
 Logs for the services will be piped to `logs/service_main.log` and `logs/service_dashboard.log`.
 
 ---
-*Disclaimer: Trading involves significant risk. This bot is for educational and experimental purposes.*
+
+## 📁 Project Structure
+
+```text
+GoldBot/
+├── config/              # Configuration files (settings.example.yaml)
+├── data/                # SQLite database, heartbeat, downloaded MT5 data
+├── models/              # AI models (live versions and past checkpoints)
+├── scripts/             # Scripts for VPS/NSSM Windows service setup
+├── src/                 # Core Python source code
+│   ├── ai/              # Bi-LSTM, Feature Builders, Online Learner
+│   ├── backtest/        # Walk-Forward Backtest Engine
+│   ├── broker/          # MT5 Client & ensure_connection decorator
+│   ├── dashboard/       # Flask Web UI & API
+│   ├── execution/       # Order & Risk Management
+│   ├── filters/         # DXY, VIX, US10Y, EMA, RSI Filters
+│   ├── notify/          # Telegram Bot (Async Worker Queue)
+│   ├── storage/         # Database and Daily Backup logic
+│   └── strategy/        # AI Strategy, Trend Following, Silver Bullet, etc.
+├── tests/               # Pytest Unit test suite
+├── venv/                # Python Virtual Environment
+├── .env                 # Secret Credentials (Not tracked)
+├── .gitignore           # Ignored files/folders
+├── requirements.txt     # Locked Dependency versions
+└── README.md            # This documentation
+```
+
+---
+
+## ⚠️ Disclaimer
+
+**This software is for educational and experimental purposes only. It is NOT financial advice.** 
+Trading in the Forex market (including Gold/XAUUSD) involves a significant risk of loss and is not suitable for all investors. You should carefully consider your investment objectives, level of experience, and risk appetite before using this bot with real money. The developers are not responsible for any financial losses incurred through the use of this software.

@@ -1,0 +1,23 @@
+broker:
+  login: YOUR_MT5_LOGIN
+  password: YOUR_MT5_PASSWORD
+  server: YOUR_MT5_SERVER
+  symbol: XAUUSDm
+
+trading:
+  timeframes: [M5, M15, H1, D1, MN1]
+  max_trades_per_day: 8
+  force_close_time: 23:45
+
+risk:
+  risk_per_trade: 0.01
+  max_daily_loss: 0.03
+  max_drawdown: 0.15
+
+ai:
+  confidence_threshold: 0.52
+  learning_mode: false
+
+telegram:
+  bot_token: YOUR_BOT_TOKEN
+  chat_id: YOUR_CHAT_ID

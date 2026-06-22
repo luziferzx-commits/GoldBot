@@ -12,6 +12,7 @@ from datetime import datetime
 from src.data.timeframe_manager import TimeframeManager
 from src.ai.model import GoldLSTM
 from src.ai.feature_builder import FeatureBuilder
+from src.ai.online_learner import OnlineLearner
 from src.risk.risk_manager import RiskManager
 from src.notify.telegram_bot import TelegramNotifier
 from src.strategy.day_trade_strategy import DayTradeStrategy
@@ -80,8 +81,12 @@ class BacktestEngine:
             except Exception as e:
                 logger.warning(f"Could not load model weights (likely size mismatch due to new features). Using initialized model: {e}")
             self.model.eval()
+            self.model.eval()
         else:
-            logger.warning("No model found for backtest! Backtest will fail.")
+            self.model = GoldLSTM(input_size=42)
+            logger.warning("No model found for backtest! Backtest will use uninitialized model.")
+            
+        self.online_learner = OnlineLearner(self.model)
 
     def pre_compute_mn1(self, df: pd.DataFrame) -> pd.DataFrame:
         df = df.copy()
@@ -346,6 +351,10 @@ class BacktestEngine:
                     open_trade['spread_cost'] = spread_cost
                     open_trade['reason'] = reason
                     trades.append(open_trade)
+                    
+                    # Call Online Learning Update
+                    self.online_learner.update(open_trade, h1)
+                    
                     open_trade = None
                     
                     # Stop trading today if daily loss > 1.5%

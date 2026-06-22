@@ -42,8 +42,8 @@ class AIStrategy(BaseStrategy):
         
         if model_path.exists():
             try:
-                # FeatureBuilder currently outputs 37 features
-                self.model = GoldLSTM(input_size=37)
+                # FeatureBuilder currently outputs 42 features
+                self.model = GoldLSTM(input_size=42)
                 self.model.load_state_dict(torch.load(model_path))
                 self.model.eval()
                 logger.info(f"Loaded AI model from {model_path}")

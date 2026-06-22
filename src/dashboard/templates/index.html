@@ -1,0 +1,558 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GoldBot Premium Dashboard</title>
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800&family=Outfit:wght@400;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        :root {
+            --bg-color: #0b0f19;
+            --bg-gradient: linear-gradient(135deg, #0b0f19 0%, #1a1b35 100%);
+            --glass-bg: rgba(255, 255, 255, 0.03);
+            --glass-border: rgba(255, 255, 255, 0.05);
+            --text-main: #f8fafc;
+            --text-muted: #94a3b8;
+            --accent-primary: #fbbf24;
+            --accent-gradient: linear-gradient(90deg, #f59e0b, #fbbf24);
+            --success: #10b981;
+            --danger: #ef4444;
+            --panel-radius: 20px;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background: var(--bg-gradient);
+            background-attachment: fixed;
+            color: var(--text-main);
+            min-height: 100vh;
+            padding: 2rem;
+            line-height: 1.5;
+        }
+
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 2.5rem;
+            animation: fadeInDown 0.8s ease-out;
+        }
+
+        .header h1 {
+            font-family: 'Outfit', sans-serif;
+            font-size: 2.5rem;
+            font-weight: 800;
+            background: var(--accent-gradient);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            text-shadow: 0 4px 20px rgba(245, 158, 11, 0.3);
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .status-badge {
+            background: rgba(16, 185, 129, 0.1);
+            color: var(--success);
+            padding: 8px 16px;
+            border-radius: 30px;
+            font-size: 14px;
+            font-weight: 600;
+            border: 1px solid rgba(16, 185, 129, 0.2);
+            box-shadow: 0 0 15px rgba(16, 185, 129, 0.2);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            animation: pulse 2s infinite;
+        }
+
+        .grid-container {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 1.5rem;
+            margin-bottom: 2rem;
+        }
+
+        .panel {
+            background: var(--glass-bg);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid var(--glass-border);
+            border-radius: var(--panel-radius);
+            padding: 1.5rem;
+            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.3);
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+            animation: fadeInUp 0.8s ease-out both;
+        }
+
+        .panel:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 12px 40px 0 rgba(0, 0, 0, 0.4);
+            border-color: rgba(255, 255, 255, 0.1);
+        }
+
+        /* Stagger panel animations */
+        .grid-container .panel:nth-child(1) { animation-delay: 0.1s; }
+        .grid-container .panel:nth-child(2) { animation-delay: 0.2s; }
+        .grid-container .panel:nth-child(3) { animation-delay: 0.3s; }
+        .grid-container .panel:nth-child(4) { animation-delay: 0.4s; }
+
+        .metric-title {
+            font-size: 0.9rem;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 0.5rem;
+            font-weight: 600;
+        }
+
+        .metric-value {
+            font-family: 'Outfit', sans-serif;
+            font-size: 2.5rem;
+            font-weight: 700;
+            margin-bottom: 0.25rem;
+        }
+
+        .positive { color: var(--success); }
+        .negative { color: var(--danger); }
+        
+        .sub-metric {
+            font-size: 0.9rem;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+
+        .chart-container {
+            position: relative;
+            width: 100%;
+            height: 350px;
+            margin-top: 1rem;
+        }
+
+        h3 {
+            font-family: 'Outfit', sans-serif;
+            font-size: 1.25rem;
+            color: var(--text-main);
+            margin-bottom: 1.5rem;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        /* Table Aesthetics */
+        .table-container {
+            overflow-x: auto;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: separate;
+            border-spacing: 0 8px;
+        }
+
+        th {
+            text-align: left;
+            padding: 0 15px 10px;
+            color: var(--text-muted);
+            font-size: 0.85rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            font-weight: 600;
+        }
+
+        td {
+            padding: 15px;
+            background: rgba(255, 255, 255, 0.02);
+            color: var(--text-main);
+            font-size: 0.95rem;
+        }
+
+        tr td:first-child { border-top-left-radius: 12px; border-bottom-left-radius: 12px; }
+        tr td:last-child { border-top-right-radius: 12px; border-bottom-right-radius: 12px; }
+
+        tbody tr {
+            transition: all 0.2s ease;
+        }
+
+        tbody tr:hover td {
+            background: rgba(255, 255, 255, 0.05);
+            transform: scale(1.01);
+        }
+
+        /* Strategy Scores Bars */
+        .strategy-scores {
+            display: flex;
+            flex-direction: column;
+            gap: 1.2rem;
+        }
+
+        .score-row {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .flex-between {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 0.95rem;
+            font-weight: 600;
+        }
+
+        .score-bar-container {
+            width: 100%;
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 10px;
+            height: 10px;
+            overflow: hidden;
+            box-shadow: inset 0 2px 4px rgba(0,0,0,0.5);
+        }
+
+        .score-bar {
+            height: 100%;
+            background: var(--accent-gradient);
+            border-radius: 10px;
+            box-shadow: 0 0 10px rgba(245, 158, 11, 0.5);
+            transition: width 1s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        .active-strategy .score-bar {
+            background: linear-gradient(90deg, #10b981, #34d399);
+            box-shadow: 0 0 10px rgba(16, 185, 129, 0.5);
+        }
+
+        .badge-pill {
+            padding: 4px 10px;
+            border-radius: 20px;
+            font-size: 0.75rem;
+            font-weight: 700;
+            background: rgba(255, 255, 255, 0.1);
+        }
+
+        /* Empty State */
+        .empty-state {
+            text-align: center;
+            padding: 2rem;
+            color: var(--text-muted);
+            font-style: italic;
+        }
+
+        /* Animations */
+        @keyframes fadeInDown {
+            from { opacity: 0; transform: translateY(-20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        @keyframes fadeInUp {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        @keyframes pulse {
+            0% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.4); }
+            70% { box-shadow: 0 0 0 10px rgba(16, 185, 129, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+        }
+
+        @keyframes pulse-learning {
+            0% { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.4); }
+            70% { box-shadow: 0 0 0 10px rgba(245, 158, 11, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0); }
+        }
+
+    </style>
+</head>
+<body>
+
+    <div class="header">
+        <h1>✨ GoldBot <span style="color:var(--text-main); font-weight: 300;">| Intelligence</span></h1>
+        <div class="status-badge" id="mode-badge">LIVE MODE</div>
+    </div>
+
+    <div class="grid-container">
+        <div class="panel">
+            <div class="metric-title">Account Equity</div>
+            <div class="metric-value" id="equity-value">--</div>
+            <div class="sub-metric" id="equity-change">--</div>
+        </div>
+        <div class="panel">
+            <div class="metric-title">Today's P&L</div>
+            <div class="metric-value" id="today-pnl">--</div>
+            <div class="sub-metric" id="today-pnl-pct">--</div>
+        </div>
+        <div class="panel">
+            <div class="metric-title">Win Rate (30 Days)</div>
+            <div class="metric-value" id="win-rate">--</div>
+            <div class="sub-metric" style="color: var(--text-muted)">Rolling Window</div>
+        </div>
+        <div class="panel">
+            <div class="metric-title">Open Positions</div>
+            <div class="metric-value" id="open-positions">--</div>
+            <div class="sub-metric" style="color: var(--text-muted)">Active Trades</div>
+        </div>
+    </div>
+
+    <div class="grid-container" style="grid-template-columns: 2.5fr 1fr; margin-bottom: 2rem;">
+        <div class="panel">
+            <h3>📈 Performance Curve</h3>
+            <div class="chart-container">
+                <canvas id="equityChart"></canvas>
+            </div>
+        </div>
+        <div class="panel">
+            <h3>🧠 AI Strategy Selection</h3>
+            <div class="strategy-scores" id="strategy-scores">
+                <!-- Scores injected here -->
+                <div class="empty-state">Loading intelligence...</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="panel">
+        <h3>📋 Recent Execution Log</h3>
+        <div class="table-container">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Timestamp</th>
+                        <th>Strategy Used</th>
+                        <th>Direction</th>
+                        <th>Lot Size</th>
+                        <th>Net PnL</th>
+                        <th>Reason / Exit</th>
+                    </tr>
+                </thead>
+                <tbody id="trades-body">
+                    <!-- Trades injected here -->
+                    <tr><td colspan="6" class="empty-state">No trades executed yet. Awaiting signals...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <script>
+        let equityChart;
+
+        // Custom formatters
+        const currencyFormatter = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' });
+        
+        async function fetchData() {
+            try {
+                const [statusRes, tradesRes, equityRes, selectorRes] = await Promise.all([
+                    fetch('/api/status'),
+                    fetch('/api/trades'),
+                    fetch('/api/equity'),
+                    fetch('/api/selector')
+                ]);
+
+                if(statusRes.ok) updateStatus(await statusRes.json());
+                if(tradesRes.ok) updateTrades(await tradesRes.json());
+                if(equityRes.ok) updateChart(await equityRes.json());
+                if(selectorRes.ok) updateSelector(await selectorRes.json());
+
+            } catch (err) {
+                console.error("Error fetching data:", err);
+            }
+        }
+
+        function updateStatus(status) {
+            document.getElementById('equity-value').innerText = currencyFormatter.format(status.equity);
+            
+            const pnlVal = status.daily_pnl || 0;
+            const pnlPct = status.daily_pnl_pct || 0;
+            
+            document.getElementById('today-pnl').innerText = (pnlVal >= 0 ? '+' : '') + currencyFormatter.format(pnlVal);
+            document.getElementById('today-pnl').className = 'metric-value ' + (pnlVal > 0 ? 'positive' : (pnlVal < 0 ? 'negative' : ''));
+            
+            document.getElementById('today-pnl-pct').innerText = (pnlVal >= 0 ? '▲ ' : '▼ ') + Math.abs(pnlPct).toFixed(2) + '%';
+            document.getElementById('today-pnl-pct').className = 'sub-metric ' + (pnlVal > 0 ? 'positive' : (pnlVal < 0 ? 'negative' : ''));
+            
+            document.getElementById('win-rate').innerText = (status.win_rate || 0).toFixed(1) + '%';
+            document.getElementById('open-positions').innerText = status.open_positions || 0;
+            
+            const modeBadge = document.getElementById('mode-badge');
+            modeBadge.innerText = status.mode;
+            
+            if (status.mode === 'LEARNING MODE') {
+                modeBadge.style.background = 'rgba(245, 158, 11, 0.1)';
+                modeBadge.style.color = 'var(--accent-primary)';
+                modeBadge.style.borderColor = 'rgba(245, 158, 11, 0.2)';
+                modeBadge.style.animation = 'pulse-learning 2s infinite';
+            } else {
+                modeBadge.style.background = 'rgba(16, 185, 129, 0.1)';
+                modeBadge.style.color = 'var(--success)';
+                modeBadge.style.borderColor = 'rgba(16, 185, 129, 0.2)';
+                modeBadge.style.animation = 'pulse 2s infinite';
+            }
+        }
+
+        function updateTrades(trades) {
+            const tbody = document.getElementById('trades-body');
+            if (!trades || trades.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="6" class="empty-state">No trades executed yet. Awaiting signals...</td></tr>';
+                return;
+            }
+            
+            tbody.innerHTML = '';
+            trades.forEach(t => {
+                const isProfit = t.net_pnl > 0;
+                const isLoss = t.net_pnl < 0;
+                const pnlClass = isProfit ? 'positive' : (isLoss ? 'negative' : '');
+                const pnlText = t.net_pnl !== null ? ((isProfit ? '+' : '') + currencyFormatter.format(t.net_pnl)) : 'OPEN';
+                
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td><span class="badge-pill">${t.exit_time || t.entry_time || 'N/A'}</span></td>
+                    <td style="font-weight: 600;">${t.signal_source || 'Unknown'}</td>
+                    <td class="${t.direction === 'BUY' ? 'positive' : 'negative'}" style="font-weight: bold;">${t.direction}</td>
+                    <td>${t.lot}</td>
+                    <td class="${pnlClass}" style="font-weight: bold;">${pnlText}</td>
+                    <td style="color: var(--text-muted)">${t.reason || '-'}</td>
+                `;
+                tbody.appendChild(tr);
+            });
+        }
+
+        function updateSelector(scores) {
+            const container = document.getElementById('strategy-scores');
+            
+            if (!scores || Object.keys(scores).length === 0) {
+                container.innerHTML = '<div class="empty-state">Awaiting Strategy Matrix...</div>';
+                return;
+            }
+            
+            container.innerHTML = '';
+            const sorted = Object.entries(scores).sort((a, b) => b[1] - a[1]);
+            
+            sorted.forEach(([name, score], index) => {
+                const pct = Math.min(100, Math.max(0, score));
+                const isActive = (index === 0 && score >= 30);
+                const marker = isActive ? '<span title="Active Strategy">⚡</span>' : '';
+                
+                container.innerHTML += `
+                    <div class="score-row ${isActive ? 'active-strategy' : ''}">
+                        <div class="flex-between">
+                            <span style="display:flex; align-items:center; gap:5px; text-transform:capitalize;">${name.replace(/_/g, ' ')} ${marker}</span>
+                            <span>${score.toFixed(0)}</span>
+                        </div>
+                        <div class="score-bar-container">
+                            <div class="score-bar" style="width: ${pct}%;"></div>
+                        </div>
+                    </div>
+                `;
+            });
+        }
+
+        function updateChart(data) {
+            const ctx = document.getElementById('equityChart').getContext('2d');
+            
+            // Generate a gradient for the chart fill
+            const gradient = ctx.createLinearGradient(0, 0, 0, 350);
+            gradient.addColorStop(0, 'rgba(251, 191, 36, 0.4)'); // amber-400
+            gradient.addColorStop(1, 'rgba(251, 191, 36, 0.0)');
+
+            // Fallback mock data if empty
+            if (!data || data.length === 0) {
+                data = [
+                    {date: new Date().toISOString().split('T')[0], equity: 10000}
+                ];
+            }
+
+            // Ensure we have at least 2 points to draw a line, even if flat
+            if (data.length === 1) {
+                const prev = new Date(data[0].date);
+                prev.setDate(prev.getDate() - 1);
+                data.unshift({ date: prev.toISOString().split('T')[0], equity: data[0].equity });
+            }
+
+            const labels = data.map(d => d.date);
+            const values = data.map(d => d.equity);
+
+            if (equityChart) {
+                equityChart.data.labels = labels;
+                equityChart.data.datasets[0].data = values;
+                equityChart.update();
+                return;
+            }
+
+            equityChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: 'Account Equity',
+                        data: values,
+                        borderColor: '#fbbf24',
+                        backgroundColor: gradient,
+                        borderWidth: 3,
+                        fill: true,
+                        tension: 0.4, // Smooth curves
+                        pointBackgroundColor: '#fbbf24',
+                        pointBorderColor: '#fff',
+                        pointBorderWidth: 2,
+                        pointRadius: 4,
+                        pointHoverRadius: 6
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: {
+                        mode: 'index',
+                        intersect: false,
+                    },
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: {
+                            backgroundColor: 'rgba(15, 23, 42, 0.9)',
+                            titleFont: { family: 'Inter', size: 13 },
+                            bodyFont: { family: 'Outfit', size: 14, weight: 'bold' },
+                            padding: 12,
+                            borderColor: 'rgba(255,255,255,0.1)',
+                            borderWidth: 1,
+                            displayColors: false,
+                            callbacks: {
+                                label: function(context) {
+                                    return currencyFormatter.format(context.parsed.y);
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            grid: { color: 'rgba(255, 255, 255, 0.05)', drawBorder: false },
+                            ticks: { color: '#94a3b8', font: { family: 'Inter' } }
+                        },
+                        y: {
+                            grid: { color: 'rgba(255, 255, 255, 0.05)', drawBorder: false },
+                            ticks: { 
+                                color: '#94a3b8', 
+                                font: { family: 'Inter' },
+                                callback: function(value) {
+                                    return '$' + value.toLocaleString();
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        // Initialize
+        fetchData();
+        setInterval(fetchData, 5000); // 5 sec updates for dynamic feel
+    </script>
+</body>
+</html>

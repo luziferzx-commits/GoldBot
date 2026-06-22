@@ -137,8 +137,8 @@ class StrategySelector:
         ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
         best_name, best_score = ranked[0]
 
-        # ถ้าคะแนนสูงสุดต่ำกว่า 35 -> ไม่เทรด รอสัญญาณที่ดีกว่า
-        if best_score < 35:
+        # ถ้าคะแนนสูงสุดต่ำกว่า 30 -> ไม่เทรด รอสัญญาณที่ดีกว่า
+        if best_score < 30:
             return "SKIP", best_score
 
         return best_name, best_score
@@ -151,7 +151,7 @@ class StrategySelector:
         
         status = "🧠 Strategy Selector Status\n──────────────────────────\n"
         for i, (name, score) in enumerate(ranked):
-            marker = "⭐ กำลังใช้" if i == 0 and score >= 35 else ""
+            marker = "⭐ กำลังใช้" if i == 0 and score >= 30 else ""
             status += f"{i+1}. {name:<15} {score:>.0f} {marker}\n"
             
         status += "──────────────────────────\nWin Rates (7 วัน):\n"

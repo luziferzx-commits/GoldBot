@@ -6,7 +6,7 @@ broker:
 
 trading:
   timeframes: ["M5", "M15", "H1", "D1", "MN1"]
-  max_trades_per_day: 5
+  max_trades_per_day: 8
   force_close_time: "23:45"
   session_london_start: "15:00"
   session_london_end: "19:00"
@@ -24,7 +24,7 @@ risk:
 
 ai:
   model_path: "models/live/model_current.pt"
-  confidence_threshold: 0.65
+  confidence_threshold: 0.52
   retrain_interval_days: 28
   learning_mode: false
 

@@ -11,30 +11,44 @@ class GoldLSTM(nn.Module):
     LSTM Model with Self-Attention for Gold trading.
     """
     
-    def __init__(self, input_size: int, hidden_size: int = 128, num_layers: int = 2, dropout: float = 0.2):
+    def __init__(self, input_size: int, hidden_size: int = 256, num_layers: int = 3, dropout: float = 0.3):
         super(GoldLSTM, self).__init__()
         
         self.hidden_size = hidden_size
         self.num_layers = num_layers
+        self.bidirectional = True
+        self.num_directions = 2 if self.bidirectional else 1
         
         # LSTM layer
-        # batch_first=True means input tensor is (batch_size, seq_len, features)
         self.lstm = nn.LSTM(
             input_size=input_size,
             hidden_size=hidden_size,
             num_layers=num_layers,
             batch_first=True,
+            bidirectional=self.bidirectional,
             dropout=dropout if num_layers > 1 else 0.0
         )
         
-        # Attention layer
-        # Linear layer to compute attention weights
-        self.attention_fc = nn.Linear(hidden_size, 1)
+        lstm_out_dim = hidden_size * self.num_directions
+        
+        # Multi-Head Attention
+        self.attention = nn.MultiheadAttention(
+            embed_dim=lstm_out_dim,
+            num_heads=8,
+            dropout=0.1,
+            batch_first=True
+        )
         
         # Fully connected layers
-        self.fc1 = nn.Linear(hidden_size, 64)
-        self.dropout = nn.Dropout(dropout)
-        self.fc2 = nn.Linear(64, 3) # 3 classes: BUY(0), SELL(1), HOLD(2)
+        self.fc = nn.Sequential(
+            nn.Linear(lstm_out_dim, 256),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            nn.Linear(256, 128),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(128, 3) # 3 classes: BUY(0), SELL(1), HOLD(2)
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -46,22 +60,18 @@ class GoldLSTM(nn.Module):
         Returns:
             Logits of shape (batch, 3)
         """
-        # LSTM output: out=(batch, seq, hidden), (hn, cn)
+        # LSTM output: lstm_out=(batch, seq, hidden * num_directions)
         lstm_out, _ = self.lstm(x)
         
-        # Self-Attention
-        # Compute attention scores: (batch, seq, 1)
-        attn_scores = self.attention_fc(lstm_out)
-        attn_weights = F.softmax(attn_scores, dim=1)
+        # MultiHeadAttention expects query, key, value
+        # For self-attention, all three are the same (lstm_out)
+        attn_out, _ = self.attention(lstm_out, lstm_out, lstm_out)
         
-        # Context vector: Weighted sum of lstm outputs along the seq dimension
-        # (batch, seq, hidden) * (batch, seq, 1) -> (batch, seq, hidden) -> sum(dim=1) -> (batch, hidden)
-        context = torch.sum(lstm_out * attn_weights, dim=1)
+        # Context vector: mean over the sequence dimension
+        context = torch.mean(attn_out, dim=1)
         
         # FC layers
-        x = F.relu(self.fc1(context))
-        x = self.dropout(x)
-        logits = self.fc2(x)
+        logits = self.fc(context)
         
         return logits
 

@@ -27,22 +27,42 @@ class ModelTrainer:
         self.builder = FeatureBuilder(seq_len=seq_len)
         self.external_factors = ExternalFactors()
 
-    def _prepare_labels(self, m5_data) -> torch.Tensor:
+    def create_smart_labels(self, df: pd.DataFrame, forward_bars: int = 20) -> torch.Tensor:
         """
-        Create dummy labels for training. 
-        In reality, you'd calculate forward returns to label BUY/SELL/HOLD.
+        Create labels based on expected Risk:Reward instead of simple direction.
+        BUY (0), SELL (1), HOLD (2). Note: original code used BUY(0), SELL(1). The prompt used BUY(2), SELL(0), HOLD(1). 
+        To be consistent with model's 3 classes: 0=BUY, 1=SELL, 2=HOLD, we will use:
+        BUY = 0, SELL = 1, HOLD = 2.
         """
-        # Simple heuristic: if next 5 bars max high > SL, and close is higher -> BUY
-        # For skeleton, just random labels
-        n_samples = len(m5_data) - self.seq_len + 1
-        # Realistic Labels: if next bar closes higher -> BUY (0), lower -> SELL (1), flat -> HOLD (2)
-        # Using shift to peek into the future
-        future_returns = m5_data['close'].shift(-1) - m5_data['close']
-        labels = np.zeros(len(m5_data)) # Default BUY
-        labels[future_returns < -0.5] = 1 # SELL
-        labels[(future_returns >= -0.5) & (future_returns <= 0.5)] = 2 # HOLD
-        
-        # We need to slice the labels to match the sequence outputs
+        import pandas_ta_classic as ta
+        if 'ATR_14' not in df.columns:
+            df['ATR_14'] = ta.atr(df['high'], df['low'], df['close'], length=14).bfill().fillna(5.0)
+            
+        labels = []
+        # Calculate for all rows
+        for i in range(len(df)):
+            if i >= len(df) - forward_bars:
+                labels.append(2) # HOLD if not enough future
+                continue
+                
+            future = df.iloc[i+1:i+forward_bars+1]
+            current_atr = df['ATR_14'].iloc[i]
+            if current_atr <= 0: current_atr = 1.0 # fallback
+            
+            max_up = future['high'].max() - df['close'].iloc[i]
+            max_down = df['close'].iloc[i] - future['low'].min()
+            
+            # BUY if price can go up > 1.5 ATR before going down 1 ATR
+            # Approximation: if max_up > 1.5 ATR and max_up > max_down * 1.5
+            if max_up > current_atr * 1.5 and max_up > max_down * 1.5:
+                labels.append(0) # BUY
+            # SELL if price goes down > 1.5 ATR before going up 1 ATR
+            elif max_down > current_atr * 1.5 and max_down > max_up * 1.5:
+                labels.append(1) # SELL
+            else:
+                labels.append(2) # HOLD
+                
+        # Slice the labels to match the sequence outputs
         seq_labels = labels[self.seq_len - 1:]
         return torch.tensor(seq_labels, dtype=torch.long)
 
@@ -84,7 +104,7 @@ class ModelTrainer:
         if X is None:
             return False
             
-        y = self._prepare_labels(h1_data)
+        y = self.create_smart_labels(h1_data)
         
         # Ensure lengths match
         min_len = min(len(X), len(y))
@@ -94,8 +114,8 @@ class ModelTrainer:
         n_samples = len(X)
         n_features = X.shape[2]
         
-        # Walk-forward 5 folds
-        folds = 5
+        # Walk-forward 1 fold for quick validation
+        folds = 1
         fold_size = n_samples // folds
         
         best_val_acc = 0.0
@@ -121,10 +141,19 @@ class ModelTrainer:
             val_loader = DataLoader(TensorDataset(X_val, y_val), batch_size=batch_size, shuffle=False)
             
             model = GoldLSTM(input_size=n_features)
-            optimizer = optim.Adam(model.parameters(), lr=0.001)
-            criterion = nn.CrossEntropyLoss()
             
-            patience = 10
+            # Compute class weights to handle HOLD dominance
+            class_counts = torch.bincount(y_train, minlength=3).float()
+            # Add small epsilon to prevent division by zero
+            class_counts[class_counts == 0] = 1.0
+            weights = 1.0 / class_counts
+            weights = weights / weights.sum() * 3.0 # normalize
+            
+            optimizer = optim.AdamW(model.parameters(), lr=0.0005, weight_decay=1e-4)
+            scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=50)
+            criterion = nn.CrossEntropyLoss(weight=weights)
+            
+            patience = 15
             patience_counter = 0
             fold_best_acc = 0.0
             
@@ -136,8 +165,14 @@ class ModelTrainer:
                     out = model(batch_x)
                     loss = criterion(out, batch_y)
                     loss.backward()
+                    
+                    # Gradient clipping
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                    
                     optimizer.step()
                     train_loss += loss.item()
+                    
+                scheduler.step()
                     
                 # Validation
                 model.eval()
@@ -191,7 +226,7 @@ if __name__ == "__main__":
         manager = TimeframeManager(client, settings['broker']['symbol'])
         trainer = ModelTrainer(manager)
         
-        # Run full training loop
-        trainer.train(epochs=100, batch_size=64)
+        # Run full training loop (reduced epochs for quick validation)
+        trainer.train(epochs=20, batch_size=64)
     except Exception as e:
         print(f"Test failed: {e}")

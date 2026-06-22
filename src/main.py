@@ -4,6 +4,7 @@ import schedule
 import signal
 import sys
 import yaml
+import pandas as pd
 from datetime import datetime
 
 from src.broker.mt5_client import MT5Client
@@ -24,6 +25,7 @@ from src.ai.learning_mode import LearningMode
 from src.analysis.external_factors import ExternalFactors
 from src.analysis.sentiment_analyzer import SentimentAnalyzer
 from src.strategy.strategy_selector import StrategySelector, MarketContext
+from src.ai.online_learner import OnlineLearner
 
 logging.basicConfig(
     level=logging.INFO,
@@ -81,6 +83,9 @@ class GoldBot:
         self.learning_mode = LearningMode(is_learning=is_learning)
         self.external_factors = ExternalFactors()
         self.sentiment_analyzer = SentimentAnalyzer()
+        
+        # Online Learning
+        self.online_learner = OnlineLearner(self.strategy.model)
         
         # Notifications
         self.notifier = TelegramNotifier(self.db)
@@ -144,7 +149,8 @@ class GoldBot:
                     h1[col] = 0.0
                     if col == 'vix_level': h1[col] = 15.0
             
-            h1['sentiment_score'] = self.sentiment_analyzer.analyze_sentiment()
+            score, _, _ = self.sentiment_analyzer.fetch_and_analyze()
+            h1['sentiment_score'] = score
             
             # Recompute bias
             h1['gold_bias'] = 0.0
@@ -166,6 +172,9 @@ class GoldBot:
             logger.info("Force close time reached.")
             self.order_manager.force_close_all()
             return
+            
+        # 3.5 Check recently closed trades for Online Learning
+        self._trigger_online_learning(h1)
 
         # 4. Check Circuit Breaker (Handled by RiskManager internally, but let's update equity first)
         account_info = self.client.get_account_info()
@@ -285,6 +294,16 @@ class GoldBot:
         self.client.disconnect()
         sys.exit(0)
 
+    def _trigger_online_learning(self, h1_data):
+        """
+        Check for recently closed trades in the DB or MT5 history.
+        If a trade just closed, pass it to OnlineLearner to learn from it immediately.
+        """
+        # In a full live implementation, we'd pull from mt5.history_deals_get() 
+        # and match with our local DB to find freshly closed trades.
+        # This is a hook simulating that logic.
+        pass
+        
 if __name__ == "__main__":
     bot = GoldBot()
     signal.signal(signal.SIGINT, bot.stop)

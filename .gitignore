@@ -15,11 +15,11 @@ models/learning/
 models/live/
 !data/.keep
 
-# Logs
+# Logs & Database
 logs/
 *.log
+*.db
+backtest_results/
 
 # Test files
 test_*.py
-*.db
-backtest_results/

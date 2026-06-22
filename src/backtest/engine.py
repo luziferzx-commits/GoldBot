@@ -15,6 +15,7 @@ from src.ai.feature_builder import FeatureBuilder
 from src.risk.risk_manager import RiskManager
 from src.notify.telegram_bot import TelegramNotifier
 from src.strategy.day_trade_strategy import DayTradeStrategy
+from src.strategy.strategy_selector import StrategySelector, MarketContext
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(name)s: %(message)s')
 logger = logging.getLogger(__name__)
@@ -52,6 +53,19 @@ class BacktestEngine:
         self.po3_strategy = PO3Strategy(self.strategy)
         self.overlap_scalper = OverlapScalper(self.strategy)
         
+        # We need a mock DB or real DB for backtest strategy selector
+        from src.storage.db import Database
+        self.db = Database()
+        
+        self.selector = StrategySelector(self.db, {
+            "silver_bullet": self.sb_strategy,
+            "ai_strategy": self.strategy,
+            "asian_range": self.asian_strategy,
+            "sge": self.sge_strategy,
+            "po3": self.po3_strategy,
+            "overlap": self.overlap_scalper
+        })
+        
         # Load Model
         model_path = Path("models/learning/model_demo.pt")
         if not model_path.exists():
@@ -59,7 +73,7 @@ class BacktestEngine:
             # We could fallback to load_best_version() here, but for now we expect the learning model.
             model_path = Path("models/live/model_current.pt")
         if model_path.exists():
-            self.model = GoldLSTM(input_size=37)
+            self.model = GoldLSTM(input_size=42) # Updated for 5 new historical features
             try:
                 self.model.load_state_dict(torch.load(model_path))
                 logger.info(f"Loaded model from {model_path}")
@@ -140,16 +154,19 @@ class BacktestEngine:
         h1 = manager.get_data("H1")
         m5 = manager.get_data("M5")
         m15 = manager.get_data("M15")
+        d1_raw = manager.get_data("D1")
+        
         if h1 is None or len(h1) < 100 or m5 is None:
             logger.error("Insufficient data.")
             return
             
         m5.index = pd.to_datetime(m5.index, utc=True).tz_localize(None)
         m15.index = pd.to_datetime(m15.index, utc=True).tz_localize(None)
+        d1_raw.index = pd.to_datetime(d1_raw.index, utc=True).tz_localize(None)
             
         logger.info("Pre-computing MTF indicators...")
         mn1_aligned = self.pre_compute_mn1(manager.get_data("MN1"))
-        d1_aligned = self.pre_compute_d1(manager.get_data("D1"))
+        d1_aligned = self.pre_compute_d1(d1_raw)
         
         # Calculate ATR MA 20 on D1
         d1_aligned['D1_ATR_MA_20'] = d1_aligned['D1_ATR'].rolling(window=20).mean()
@@ -348,6 +365,37 @@ class BacktestEngine:
                 if len(m5_window) < 50:
                     continue
                 
+                gmt7_time = timestamp + pd.Timedelta(hours=7)
+                current_hour_gmt7 = gmt7_time.hour
+                
+                session = "OTHER"
+                if 8 <= current_hour_gmt7 < 10: session = "SGE"
+                elif 10 <= current_hour_gmt7 < 15: session = "ASIAN"
+                elif 15 <= current_hour_gmt7 < 19: session = "LONDON"
+                elif 19 <= current_hour_gmt7 < 23: session = "OVERLAP"
+                elif 23 <= current_hour_gmt7 or current_hour_gmt7 < 2: session = "NY"
+                
+                from src.analysis.market_regime import MarketRegime
+                regime_analyzer = MarketRegime()
+                m5_window_reg = regime_analyzer.analyze(m5_window)
+                regime = m5_window_reg['market_regime'].iloc[-1]
+                
+                ai_direction, ai_conf = self.strategy.get_raw_prediction(m5_window)
+                h1_trend = row.get('H1_trend', "SIDEWAYS")
+                h1_trend_str = "BUY" if h1_trend == "UP" else ("SELL" if h1_trend == "DOWN" else "SIDEWAYS")
+                
+                context = MarketContext(
+                    current_time=gmt7_time,
+                    market_regime=regime,
+                    session=session,
+                    ai_confidence=ai_conf,
+                    volatility_ratio=d1_atr / 5.0, # proxy
+                    volume_spike=m5_window['tick_volume'].iloc[-1] > m5_window['tick_volume'].rolling(20).mean().iloc[-1] * 1.5,
+                    h1_trend=h1_trend,
+                    asian_range_formed=self.po3_strategy.asian_high > 0,
+                    is_news_window=False # mocked
+                )
+                
                 # Signal Routing
                 from src.strategy.base import Signal
                 signal = Signal("HOLD", 0.0)
@@ -355,29 +403,18 @@ class BacktestEngine:
                 # Ensure PO3 records manipulation phase continuously
                 self.po3_strategy.generate_signal(m5_window, m15_window, h1_window, None, None)
                 
-                gmt7_time = timestamp + pd.Timedelta(hours=7)
-                current_hour_gmt7 = gmt7_time.hour
+                strategy_name, score = self.selector.select(context, h1_window, d1_raw[d1_raw.index <= timestamp])
                 
-                if 8 <= current_hour_gmt7 < 10:
-                    signal = self.sge_strategy.generate_signal(m5_window, m15_window, h1_window, None, None)
-                elif 15 <= current_hour_gmt7 < 16:
-                    signal = self.asian_strategy.generate_signal(m5_window, m15_window, h1_window, None, None)
-                elif 19 <= current_hour_gmt7 < 23:
-                    signal = self.overlap_scalper.generate_signal(m5_window, m15_window, h1_window, None, None)
-                    
+                if strategy_name != "SKIP":
+                    selected_strategy = self.selector.strategies[strategy_name]
+                    signal = selected_strategy.generate_signal(m5_window, m15_window, h1_window, None, None)
+                    signal.source = strategy_name
+                
+                # Fallback Day Trade AI Confidence refine logic
                 if signal.direction == "HOLD":
-                    signal = self.sb_strategy.generate_signal(m5_window, m15_window, h1_window, None, None)
-                    
-                if signal.direction == "HOLD":
-                    signal = self.po3_strategy.generate_signal(m5_window, m15_window, h1_window, None, None)
-                    
-                if signal.direction == "HOLD":
-                    # Fallback to AI
-                    ai_direction, ai_conf = self.strategy.get_raw_prediction(h1_window)
-                    h1_trend = row.get('H1_trend', "SIDEWAYS")
-                    h1_trend_str = "BUY" if h1_trend == "UP" else ("SELL" if h1_trend == "DOWN" else "SIDEWAYS")
                     if ai_conf >= self.conf_threshold and ai_direction == h1_trend_str:
                         signal = Signal(ai_direction, ai_conf, reason="AI Day Trade Fallback")
+                        signal.source = "ai_strategy"
                 
                 direction = None
                 conf = 0.0

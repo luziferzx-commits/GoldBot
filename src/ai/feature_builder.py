@@ -133,6 +133,12 @@ class FeatureBuilder:
             if col not in df.columns:
                 df[col] = 0.0
                 if col == 'vix_level': df[col] = 15.0 # default VIX
+                
+        # Ensure historical features exist
+        hist_cols = ['similar_conditions_win_rate', 'seasonal_bias_score', 'hour_bias_score', 'volatility_percentile', 'days_since_last_similar']
+        for col in hist_cols:
+            if col not in df.columns:
+                df[col] = 0.5 if col == 'volatility_percentile' or col == 'similar_conditions_win_rate' else 0.0
         
         return df.fillna(method='bfill').fillna(0)
 
@@ -165,7 +171,9 @@ class FeatureBuilder:
             'oil_change', 'sp500_change', 'sentiment_score', 'gold_bias',
             'double_top_strength', 'double_bottom_strength', 'bull_flag_strength', 
             'bear_flag_strength', 'nearest_ob_distance', 'ob_strength', 
-            'asian_range_size', 'price_vs_asian_range'
+            'asian_range_size', 'price_vs_asian_range',
+            'similar_conditions_win_rate', 'seasonal_bias_score', 'hour_bias_score', 
+            'volatility_percentile', 'days_since_last_similar'
         ]
         
         # Also store these feature cols length to pass to model

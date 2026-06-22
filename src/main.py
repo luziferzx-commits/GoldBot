@@ -23,6 +23,7 @@ from src.calendar.economic_calendar import EconomicCalendar
 from src.ai.learning_mode import LearningMode
 from src.analysis.external_factors import ExternalFactors
 from src.analysis.sentiment_analyzer import SentimentAnalyzer
+from src.strategy.strategy_selector import StrategySelector, MarketContext
 
 logging.basicConfig(
     level=logging.INFO,
@@ -64,6 +65,16 @@ class GoldBot:
         self.po3_strategy = PO3Strategy(self.strategy)
         self.overlap_scalper = OverlapScalper(self.strategy)
         
+        # Strategy Selector
+        self.selector = StrategySelector(self.db, {
+            "silver_bullet": self.sb_strategy,
+            "ai_strategy": self.strategy,
+            "asian_range": self.asian_strategy,
+            "sge": self.sge_strategy,
+            "po3": self.po3_strategy,
+            "overlap": self.overlap_scalper
+        })
+        
         # Filters
         self.risk_manager = RiskManager()
         self.calendar = EconomicCalendar()
@@ -84,6 +95,8 @@ class GoldBot:
         self.notifier.register_command("/stop", self.handle_stop_command)
         self.notifier.register_command("/close_all", self.handle_close_all)
         self.notifier.register_command("/summary", lambda: self.reporter.generate_report())
+        self.notifier.register_command("/selector", lambda: self.selector.get_status_text())
+        self.notifier.register_command("/history", lambda: self.selector.get_history_text())
 
     def handle_stop_command(self):
         self.notifier.send_message("Stopping bot and closing all positions...")
@@ -171,31 +184,53 @@ class GoldBot:
             logger.info("High impact news window. Skipping trading.")
             return
             
-        # 6. Run Strategy (24-Hour Routing)
+        # 6. Run Strategy (24-Hour Routing via StrategySelector)
         current_hour_gmt7 = (datetime.utcnow() + pd.Timedelta(hours=7)).hour
-        signal = Signal("HOLD", 0.0)
-
+        
+        session = "OTHER"
+        if 8 <= current_hour_gmt7 < 10: session = "SGE"
+        elif 10 <= current_hour_gmt7 < 15: session = "ASIAN"
+        elif 15 <= current_hour_gmt7 < 19: session = "LONDON"
+        elif 19 <= current_hour_gmt7 < 23: session = "OVERLAP"
+        elif 23 <= current_hour_gmt7 or current_hour_gmt7 < 2: session = "NY"
+        
+        current_price = m5['close'].iloc[-1]
+        atr = h1['D1_ATR'].iloc[-1] if 'D1_ATR' in h1.columns else 5.0
+        h1_trend = h1['H1_trend'].iloc[-1] if 'H1_trend' in h1.columns else "SIDEWAYS"
+        
+        from src.analysis.market_regime import MarketRegime
+        regime_analyzer = MarketRegime()
+        m5 = regime_analyzer.analyze(m5)
+        regime = m5['market_regime'].iloc[-1]
+        
         # Ensure PO3 records manipulation phase continuously
         self.po3_strategy.generate_signal(m5, m15, h1, d1, mn1)
-
-        if 8 <= current_hour_gmt7 < 10:
-            signal = self.sge_strategy.generate_signal(m5, m15, h1, d1, mn1)
-        elif 15 <= current_hour_gmt7 < 16:
-            signal = self.asian_strategy.generate_signal(m5, m15, h1, d1, mn1)
-        elif 19 <= current_hour_gmt7 < 23:
-            signal = self.overlap_scalper.generate_signal(m5, m15, h1, d1, mn1)
-            
-        if signal.direction == "HOLD":
-            # Silver Bullet logic checks its own time windows inside
-            signal = self.sb_strategy.generate_signal(m5, m15, h1, d1, mn1)
-            
-        if signal.direction == "HOLD":
-            # PO3 only generates signal during Distribution (15:00-23:00) if bias met
-            signal = self.po3_strategy.generate_signal(m5, m15, h1, d1, mn1)
-            
-        if signal.direction == "HOLD":
-            # Fallback to AI Strategy
-            signal = self.strategy.generate_signal(m5, m15, h1, d1, mn1)
+        
+        ai_direction, ai_conf = self.strategy.get_raw_prediction(m5)
+        
+        context = MarketContext(
+            current_time=datetime.utcnow() + pd.Timedelta(hours=7),
+            market_regime=regime,
+            session=session,
+            ai_confidence=ai_conf,
+            volatility_ratio=atr / 5.0, # Simple proxy
+            volume_spike=m5['tick_volume'].iloc[-1] > m5['tick_volume'].rolling(20).mean().iloc[-1] * 1.5,
+            h1_trend=h1_trend,
+            asian_range_formed=self.po3_strategy.asian_high > 0,
+            is_news_window=self.calendar.is_news_time()
+        )
+        
+        strategy_name, score = self.selector.select(context, h1, d1)
+        from src.strategy.base import Signal
+        signal = Signal("HOLD", 0.0)
+        
+        if strategy_name == "SKIP":
+            logger.info(f"No trade - score too low ({score:.0f})")
+        else:
+            logger.info(f"StrategySelector chose {strategy_name} with score {score:.0f}")
+            selected_strategy = self.selector.strategies[strategy_name]
+            signal = selected_strategy.generate_signal(m5, m15, h1, d1, mn1)
+            signal.source = strategy_name # Used for logging to DB
             
         logger.info(f"Signal generated: {signal}")
         

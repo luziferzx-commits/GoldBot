@@ -102,6 +102,22 @@ class Database:
         finally:
             session.close()
 
+    def get_trades_by_strategy(self, strategy_name: str, days: int = 7):
+        session = self.SessionLocal()
+        try:
+            start_date = datetime.utcnow() - timedelta(days=days)
+            trades = session.query(Trade).filter(
+                Trade.timestamp >= start_date,
+                Trade.signal_source == strategy_name,
+                Trade.pnl.isnot(None)
+            ).all()
+            return trades
+        except Exception as e:
+            logger.error(f"Error getting trades by strategy: {e}")
+            return []
+        finally:
+            session.close()
+
     def log_equity(self, equity_data: dict):
         session = self.SessionLocal()
         try:

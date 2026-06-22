@@ -31,6 +31,7 @@ class Trade(Base):
     daily_bias = Column(String)
     monthly_trend = Column(String)
     is_news_time = Column(Boolean)
+    partial_tp_taken = Column(Boolean, default=False)
 
 class EquityCurve(Base):
     __tablename__ = 'equity_curve'

@@ -12,6 +12,7 @@ from src.filters.monthly_filter import MonthlyFilter
 from src.filters.daily_filter import DailyFilter
 from src.filters.h1_filter import H1Filter
 from src.filters.m15_filter import M15Filter
+from src.ai.xgboost_model import XGBoostModel
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,9 @@ class AIStrategy(BaseStrategy):
                 logger.error(f"Failed to load model from {model_path}: {e}")
         else:
             logger.warning(f"Model file not found at {model_path}. Will use fallback strategy.")
+            
+        # Load XGBoost Model
+        self.xgb_model = XGBoostModel()
 
     def generate_signal(
         self,
@@ -126,7 +130,26 @@ class AIStrategy(BaseStrategy):
             tensor = self.feature_builder.build_features(h1_data)
             if tensor is not None and len(tensor) > 0:
                 seq = tensor[-1]
-                return self.model.predict(seq)
+                pt_direction, pt_conf = self.model.predict(seq)
+                
+                # Priority #4: AI Ensemble (Voter System)
+                if self.xgb_model.is_trained:
+                    # Flatten the sequence for XGBoost
+                    seq_np = seq.numpy().reshape(1, -1)
+                    xgb_pred, xgb_conf = self.xgb_model.predict(seq_np)
+                    xgb_direction = ["HOLD", "BUY", "SELL"][xgb_pred]
+                    
+                    if pt_direction != xgb_direction and xgb_direction != "HOLD":
+                        logger.info(f"AI Ensemble Disagreement: PyTorch={pt_direction}, XGBoost={xgb_direction}. Returning HOLD.")
+                        return "HOLD", 0.0
+                    
+                    if pt_direction == xgb_direction and pt_direction != "HOLD":
+                        # Boost confidence if both agree
+                        avg_conf = (pt_conf + xgb_conf) / 2.0
+                        logger.info(f"AI Ensemble Agreement: {pt_direction} (PT: {pt_conf:.2f}, XGB: {xgb_conf:.2f})")
+                        return pt_direction, avg_conf
+                
+                return pt_direction, pt_conf
         return "HOLD", 0.0
 
 if __name__ == "__main__":

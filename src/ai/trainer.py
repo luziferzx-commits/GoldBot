@@ -9,6 +9,8 @@ from datetime import datetime
 from src.ai.model import GoldLSTM
 from src.ai.feature_builder import FeatureBuilder
 from src.ai.model_versioning import ModelVersioning
+from src.ai.xgboost_model import XGBoostModel
+from src.ai.dataset import SequenceDataset
 from src.data.timeframe_manager import TimeframeManager
 import pandas as pd
 from src.analysis.external_factors import ExternalFactors
@@ -125,11 +127,29 @@ class ModelTrainer:
         folds = 1
         fold_size = n_samples // folds
         
+        # Determine split index
+        split_idx = int(n_samples * 0.8)
+        X_train_np, y_train_np = X[:split_idx], y[:split_idx]
+        X_val_np, y_val_np = X[split_idx:], y[split_idx:]
+        
+        # 1. Train XGBoost Ensemble
+        try:
+            xgb_model = XGBoostModel()
+            # XGBoost needs 2D data: (samples, seq_len * features)
+            ns, seq_len, nf = X_train_np.shape
+            X_train_xgb = X_train_np.reshape(ns, seq_len * nf)
+            X_val_xgb = X_val_np.reshape(X_val_np.shape[0], seq_len * nf)
+            xgb_model.train(X_train_xgb, y_train_np.numpy(), X_val_xgb, y_val_np.numpy())
+        except Exception as e:
+            logger.error(f"XGBoost training failed: {e}")
+            
+        # 2. Train PyTorch LSTM
+        train_loader = DataLoader(TensorDataset(X_train_np, y_train_np), batch_size=batch_size, shuffle=True)
+        val_loader = DataLoader(TensorDataset(X_val_np, y_val_np), batch_size=batch_size, shuffle=False)
+            
         best_val_acc = 0.0
         best_model_state = None
         
-        for fold in range(folds):
-            logger.info(f"--- Training Fold {fold+1}/{folds} ---")
             
             # 80% train, 20% val for the current walk-forward window
             # A true walk forward expands the window or slides it.

@@ -108,13 +108,15 @@ class PO3Strategy(BaseStrategy):
             return Signal("HOLD", 0.0, reason="AI Confidence too low")
             
         if self.bias == "BUY" and ai_direction == "BUY":
+            entry_price = self.asian_low if self.asian_low < 99999 else current_price
             sl = self.manip_low - 0.5
-            tp = current_price + (manip_range * 1.618)
-            return Signal("BUY", ai_conf, current_price, sl, tp, reason="PO3 Bullish Distribution")
+            tp = entry_price + (manip_range * 1.618)
+            return Signal("BUY", ai_conf, entry_price=entry_price, sl_price=sl, tp_price=tp, reason="PO3 Bullish Distribution Limit")
             
         elif self.bias == "SELL" and ai_direction == "SELL":
+            entry_price = self.asian_high if self.asian_high > 0 else current_price
             sl = self.manip_high + 0.5
-            tp = current_price - (manip_range * 1.618)
-            return Signal("SELL", ai_conf, current_price, sl, tp, reason="PO3 Bearish Distribution")
+            tp = entry_price - (manip_range * 1.618)
+            return Signal("SELL", ai_conf, entry_price=entry_price, sl_price=sl, tp_price=tp, reason="PO3 Bearish Distribution Limit")
             
         return Signal("HOLD", 0.0, reason="AI direction doesn't match PO3 bias")

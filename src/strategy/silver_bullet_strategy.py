@@ -89,11 +89,13 @@ class SilverBulletStrategy(BaseStrategy):
             # Need recent Bullish MSS (in last 20 bars to cover the 1-hour window if backtesting on H1)
             recent_mss = df_ict['bullish_mss'].iloc[-20:].any()
             if recent_mss:
+                # Limit entry at the FVG top (Premium)
+                entry_price = recent_fvg['fvg_top']
                 # Find Sweep Low to put SL
                 recent_sweeps = df_ict[df_ict['sweep_low'] == True]
                 sl = recent_sweeps['sweep_price'].iloc[-1] if len(recent_sweeps) > 0 else recent_fvg['fvg_bottom'] - 2.0
-                tp = current_price + ((current_price - sl) * 2) # 1:2 RR
-                return Signal("BUY", ai_conf, current_price, sl, tp, reason="Silver Bullet Bullish Setup")
+                tp = entry_price + ((entry_price - sl) * 2) # 1:2 RR
+                return Signal("BUY", ai_conf, entry_price=entry_price, sl_price=sl, tp_price=tp, reason="Silver Bullet Bullish Limit")
 
         # Bearish Setup
         elif ai_direction == "SELL":
@@ -105,9 +107,11 @@ class SilverBulletStrategy(BaseStrategy):
             # Need recent Bearish MSS
             recent_mss = df_ict['bearish_mss'].iloc[-20:].any()
             if recent_mss:
+                # Limit entry at the FVG bottom (Discount)
+                entry_price = recent_fvg['fvg_bottom']
                 recent_sweeps = df_ict[df_ict['sweep_high'] == True]
                 sl = recent_sweeps['sweep_price'].iloc[-1] if len(recent_sweeps) > 0 else recent_fvg['fvg_top'] + 2.0
-                tp = current_price - ((sl - current_price) * 2) # 1:2 RR
-                return Signal("SELL", ai_conf, current_price, sl, tp, reason="Silver Bullet Bearish Setup")
+                tp = entry_price - ((sl - entry_price) * 2) # 1:2 RR
+                return Signal("SELL", ai_conf, entry_price=entry_price, sl_price=sl, tp_price=tp, reason="Silver Bullet Bearish Limit")
 
         return Signal("HOLD", 0.0, reason="Silver Bullet conditions not met")

@@ -186,6 +186,13 @@ class GoldBot:
             self.order_manager.force_close_all()
             return
             
+        # Priority #2: Weekend Flat (Friday Close)
+        now_dt = datetime.now()
+        if now_dt.weekday() == 4 and now_dt.strftime("%H:%M") >= "23:00":
+            logger.info("Weekend Flat active. Closing all positions for the weekend.")
+            self.order_manager.force_close_all()
+            return
+            
         # 3.5 Check recently closed trades for Online Learning
         self._trigger_online_learning(h1)
 

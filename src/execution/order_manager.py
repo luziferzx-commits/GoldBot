@@ -43,7 +43,6 @@ class OrderManager:
             return None
             
         direction = signal.direction
-        order_type = mt5.ORDER_TYPE_BUY if direction == "BUY" else mt5.ORDER_TYPE_SELL
         
         # Priority #4: Spread Filter
         tick = mt5.symbol_info_tick(self.symbol)
@@ -53,12 +52,26 @@ class OrderManager:
             if spread_points > self.max_spread:
                 logger.warning(f"Spread {spread_points:.1f} exceeds max {self.max_spread}. Skipping trade.")
                 return None
+                
+        # Priority #3: Limit Orders
+        is_limit = getattr(signal, 'entry_price', None) is not None and signal.entry_price > 0
+        if is_limit:
+            if direction == "BUY":
+                order_type = mt5.ORDER_TYPE_BUY_LIMIT
+                price = signal.entry_price
+            else:
+                order_type = mt5.ORDER_TYPE_SELL_LIMIT
+                price = signal.entry_price
+        else:
+            order_type = mt5.ORDER_TYPE_BUY if direction == "BUY" else mt5.ORDER_TYPE_SELL
+            price = tick.ask if direction == "BUY" else tick.bid
         
         request = {
-            "action": mt5.TRADE_ACTION_DEAL,
+            "action": mt5.TRADE_ACTION_PENDING if is_limit else mt5.TRADE_ACTION_DEAL,
             "symbol": self.symbol,
             "volume": lot,
             "type": order_type,
+            "price": price,
             "sl": sl,
             "tp": tp,
             "magic": 100000,
@@ -172,14 +185,48 @@ class OrderManager:
         be_dist = 1.2 * atr
         trail_act = 2.0 * atr
         trail_dist = 1.0 * atr
+        partial_dist = 1.0 * atr
+        
+        from datetime import datetime, timedelta
+        min_time = datetime.utcnow() - timedelta(days=2)
         
         for pos in positions:
             tick = mt5.symbol_info_tick(self.symbol)
             if not tick: continue
             
+            direction = "BUY" if pos.type == mt5.ORDER_TYPE_BUY else "SELL"
+            
+            # Partial Take Profit Check
             if pos.type == mt5.ORDER_TYPE_BUY:
                 current_profit_dist = tick.bid - pos.price_open
+            else:
+                current_profit_dist = pos.price_open - tick.ask
                 
+            if current_profit_dist >= partial_dist:
+                if not self.db.check_partial_tp(self.symbol, direction, min_time):
+                    # Close 50% volume
+                    half_vol = round(pos.volume / 2.0, 2)
+                    if half_vol >= 0.01:
+                        close_type = mt5.ORDER_TYPE_SELL if pos.type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY
+                        price = tick.bid if close_type == mt5.ORDER_TYPE_SELL else tick.ask
+                        request = {
+                            "action": mt5.TRADE_ACTION_DEAL,
+                            "symbol": pos.symbol,
+                            "volume": half_vol,
+                            "type": close_type,
+                            "position": pos.ticket,
+                            "price": price,
+                            "magic": 100000,
+                            "comment": "PARTIAL_TP",
+                            "type_time": mt5.ORDER_TIME_GTC,
+                            "type_filling": mt5.ORDER_FILLING_IOC,
+                        }
+                        result = mt5.order_send(request)
+                        if result and result.retcode == mt5.TRADE_RETCODE_DONE:
+                            logger.info(f"Partial TP Taken: Closed {half_vol} lots on Ticket {pos.ticket}")
+                            self.db.set_partial_tp(self.symbol, direction, min_time)
+            
+            if pos.type == mt5.ORDER_TYPE_BUY:
                 # 1. Breakeven
                 if current_profit_dist >= be_dist and (pos.sl < pos.price_open or pos.sl == 0.0):
                     self.modify_sl_tp(pos.ticket, pos.price_open, pos.tp)

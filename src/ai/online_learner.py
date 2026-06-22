@@ -4,6 +4,8 @@ import torch.nn as nn
 import torch.optim as optim
 import pandas as pd
 from pathlib import Path
+import shutil
+import collections
 from src.ai.model import GoldLSTM
 from src.ai.feature_builder import FeatureBuilder
 
@@ -17,6 +19,11 @@ class OnlineLearner:
         self.model = model
         self.builder = FeatureBuilder(seq_len=60)
         self.model_path = Path("models/learning/model_demo.pt")
+        self.checkpoint_path = Path("models/learning/model_checkpoint_good.pt")
+        
+        # Performance tracking window
+        self.performance_window = collections.deque(maxlen=10)
+        self.consecutive_losses = 0
         
         if self.model is not None:
             # We only train the fully connected layer for fast online learning 
@@ -86,10 +93,63 @@ class OnlineLearner:
         
         # Save updated model
         try:
-            # Only save occasionally in live mode or backtest to avoid disk bottleneck?
-            # For simplicity, we save immediately
             self.model_path.parent.mkdir(parents=True, exist_ok=True)
             torch.save(self.model.state_dict(), self.model_path)
             logger.debug(f"Online Learner updated model for trade {direction} at {entry_time} with PnL {pnl:.2f}. Loss: {loss.item():.4f}")
+            
+            # Record performance for rollback logic
+            is_win = pnl > 0
+            self.performance_window.append(is_win)
+            if is_win:
+                self.consecutive_losses = 0
+            else:
+                self.consecutive_losses += 1
+                
+            self.evaluate_performance()
+            
         except Exception as e:
             logger.error(f"Failed to save online learning model: {e}")
+
+    def evaluate_performance(self):
+        """
+        Evaluates recent performance and triggers rollback if degradation is detected.
+        """
+        if len(self.performance_window) < 5:
+            # Need at least 5 trades to evaluate
+            return
+            
+        win_rate = sum(self.performance_window) / len(self.performance_window)
+        
+        # Degradation conditions:
+        # 1. Win rate < 40% (0.4) over the tracked window
+        # 2. Or 3 consecutive losses
+        if win_rate < 0.40 or self.consecutive_losses >= 3:
+            logger.warning(f"Model degradation detected (Win Rate: {win_rate:.1%}, Consecutive Losses: {self.consecutive_losses}). Initiating rollback...")
+            self.rollback()
+        elif win_rate >= 0.55:
+            # If model is performing well, save it as a good checkpoint
+            self.save_checkpoint()
+
+    def save_checkpoint(self):
+        """Saves a copy of the current model as a known-good checkpoint."""
+        if self.model_path.exists():
+            shutil.copy(self.model_path, self.checkpoint_path)
+            logger.debug("Saved known-good model checkpoint.")
+
+    def rollback(self):
+        """Restores the model from the known-good checkpoint."""
+        if self.checkpoint_path.exists() and self.model is not None:
+            try:
+                self.model.load_state_dict(torch.load(self.checkpoint_path))
+                self.model.eval()
+                # Copy the checkpoint back to main model path so next load gets it
+                shutil.copy(self.checkpoint_path, self.model_path)
+                logger.info("Successfully rolled back to previous model checkpoint.")
+                
+                # Reset tracking to avoid continuous rollbacks
+                self.performance_window.clear()
+                self.consecutive_losses = 0
+            except Exception as e:
+                logger.error(f"Failed to rollback model: {e}")
+        else:
+            logger.warning("Rollback requested but no checkpoint found!")

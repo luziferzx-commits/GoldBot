@@ -1,7 +1,7 @@
 broker:
-  login: 415932519
-  password: Top123456-Z
-  server: "Exness-MT5Trial14"
+  login: 
+  password: ""
+  server: ""
   symbol: "XAUUSDm"
 
 trading:
@@ -32,5 +32,5 @@ database:
   url: "sqlite:///data/goldbot.db"
 
 telegram:
-  bot_token: "8698453701:AAEJ8D3mBVVL76dGjP4OltQCSgQUZARa3tE"
-  chat_id: "1622021286"
+  bot_token: ""
+  chat_id: ""

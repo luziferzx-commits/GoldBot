@@ -3,8 +3,13 @@ import requests
 import threading
 import time
 import yaml
+import queue
+import os
+from dotenv import load_dotenv
 from typing import Callable, Dict
 from src.storage.db import Database
+
+load_dotenv()
 
 logger = logging.getLogger(__name__)
 
@@ -18,8 +23,8 @@ class TelegramNotifier:
         try:
             with open("config/settings.yaml", "r") as f:
                 settings = yaml.safe_load(f)
-            self.token = settings['telegram']['bot_token']
-            self.chat_id = settings['telegram']['chat_id']
+            self.token = os.getenv('TELEGRAM_BOT_TOKEN', settings['telegram'].get('bot_token', ''))
+            self.chat_id = os.getenv('TELEGRAM_CHAT_ID', settings['telegram'].get('chat_id', ''))
             self.symbol = settings['broker']['symbol']
         except Exception as e:
             logger.error(f"Failed to load telegram config: {e}")
@@ -31,6 +36,7 @@ class TelegramNotifier:
         self.is_running = False
         self.offset = 0
         self.command_handlers: Dict[str, Callable] = {}
+        self.msg_queue = queue.Queue()
         
         self._setup_default_commands()
 
@@ -93,16 +99,32 @@ class TelegramNotifier:
             logger.warning("Telegram token/chat_id missing. Cannot send message.")
             return
             
+        # Put message in queue for the async worker thread to send
+        self.msg_queue.put(text)
+        
+    def _send_worker(self):
+        """Background thread that consumes the message queue and sends via HTTP."""
         url = f"{self.base_url}/sendMessage"
-        payload = {
-            "chat_id": self.chat_id,
-            "text": text,
-            "parse_mode": "HTML"
-        }
-        try:
-            requests.post(url, json=payload, timeout=10)
-        except Exception as e:
-            logger.error(f"Telegram send failed: {e}")
+        while self.is_running:
+            try:
+                # Block for 1 second waiting for a message
+                text = self.msg_queue.get(timeout=1.0)
+                payload = {
+                    "chat_id": self.chat_id,
+                    "text": text,
+                    "parse_mode": "HTML"
+                }
+                try:
+                    requests.post(url, json=payload, timeout=10)
+                except Exception as e:
+                    logger.error(f"Telegram send failed: {e}")
+                finally:
+                    self.msg_queue.task_done()
+            except queue.Empty:
+                continue
+            except Exception as e:
+                logger.error(f"Error in telegram send worker: {e}")
+                time.sleep(1)
 
     def send_trade_open(self, signal, lot, sl, tp):
         direction = getattr(signal, 'direction', 'UNKNOWN')
@@ -171,9 +193,16 @@ class TelegramNotifier:
             logger.warning("No token, skipping polling.")
             return
         self.is_running = True
-        thread = threading.Thread(target=self._poll_updates, daemon=True)
-        thread.start()
-        logger.info("Telegram polling started.")
+        
+        # Polling thread
+        poll_thread = threading.Thread(target=self._poll_updates, daemon=True)
+        poll_thread.start()
+        
+        # Async sending thread
+        send_thread = threading.Thread(target=self._send_worker, daemon=True)
+        send_thread.start()
+        
+        logger.info("Telegram polling and async worker started.")
 
     def stop_polling(self):
         self.is_running = False

@@ -3,9 +3,15 @@ import time
 import schedule
 import signal
 import sys
+import os
 import yaml
 import pandas as pd
 from datetime import datetime
+from pathlib import Path
+from logging.handlers import RotatingFileHandler
+from dotenv import load_dotenv
+
+load_dotenv()
 
 from src.broker.mt5_client import MT5Client
 from src.data.timeframe_manager import TimeframeManager
@@ -26,11 +32,15 @@ from src.analysis.external_factors import ExternalFactors
 from src.analysis.sentiment_analyzer import SentimentAnalyzer
 from src.strategy.strategy_selector import StrategySelector, MarketContext
 from src.ai.online_learner import OnlineLearner
+from src.storage.backup_manager import DatabaseBackup
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    handlers=[logging.StreamHandler(), logging.FileHandler("logs/bot.log")]
+    handlers=[
+        logging.StreamHandler(),
+        RotatingFileHandler("logs/bot.log", maxBytes=10485760, backupCount=5)
+    ]
 )
 logger = logging.getLogger(__name__)
 
@@ -47,10 +57,12 @@ class GoldBot:
             
         # Core Modules
         self.db = Database()
+        
+        login_val = os.getenv('MT5_LOGIN', self.settings['broker'].get('login'))
         self.client = MT5Client(
-            login=self.settings['broker']['login'],
-            password=self.settings['broker']['password'],
-            server=self.settings['broker']['server']
+            login=int(login_val) if login_val else 0,
+            password=os.getenv('MT5_PASSWORD', self.settings['broker'].get('password')),
+            server=os.getenv('MT5_SERVER', self.settings['broker'].get('server'))
         )
         self.symbol = self.settings['broker']['symbol']
         self.manager = TimeframeManager(self.client, self.symbol)
@@ -92,6 +104,7 @@ class GoldBot:
         self.reporter = DailyReporter(self.db, self.notifier)
         
         # State
+        self.backup_manager = DatabaseBackup()
         self.is_running = True
         self.setup_telegram_commands()
 
@@ -261,9 +274,16 @@ class GoldBot:
             else:
                 logger.info(f"Trade rejected by Risk Manager: {reason}")
                 
-        # 10. Check Retrain (Simulated)
-        # if self.learning_mode.should_retrain(...): trigger retraining thread
+        # 10. Write Heartbeat
+        self._write_heartbeat()
         
+    def _write_heartbeat(self):
+        try:
+            with open("data/heartbeat.txt", "w") as f:
+                f.write(datetime.utcnow().isoformat())
+        except Exception as e:
+            logger.error(f"Failed to write heartbeat: {e}")
+            
     def start(self):
         # Initial connections
         self.client.connect()
@@ -273,6 +293,9 @@ class GoldBot:
         
         # Daily Report at 00:05
         schedule.every().day.at("00:05").do(self.reporter.send_report)
+        
+        # Daily DB Backup at 00:00
+        schedule.every().day.at("00:00").do(self.backup_manager.backup)
         
     def run(self):
         logger.info("Starting Main Loop...")

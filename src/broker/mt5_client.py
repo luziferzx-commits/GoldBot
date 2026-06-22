@@ -3,6 +3,7 @@ import pandas as pd
 import logging
 import time
 from typing import Optional, List, Dict, Any, Tuple
+from functools import wraps
 
 # Configure logging
 logging.basicConfig(
@@ -10,6 +11,26 @@ logging.basicConfig(
     format='%(asctime)s [%(levelname)s] %(name)s: %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+def ensure_connection(func):
+    """
+    Decorator to ensure MT5 connection is active before executing a method.
+    If the connection is dead, it attempts to reconnect seamlessly.
+    """
+    @wraps(func)
+    def wrapper(self, *args, **kwargs):
+        # mt5.terminal_info() returns None if MT5 is disconnected/crashed
+        if mt5.terminal_info() is None:
+            logger.warning(f"MT5 disconnected detected before {func.__name__}. Attempting reconnection...")
+            mt5.shutdown() # Free memory and clean up lingering handlers
+            time.sleep(1)
+            
+            if not self.connect():
+                logger.error(f"Failed to reconnect to MT5 for {func.__name__}.")
+                return None # Return None on catastrophic failure
+                
+        return func(self, *args, **kwargs)
+    return wrapper
 
 class MT5Client:
     """
@@ -65,6 +86,7 @@ class MT5Client:
         mt5.shutdown()
         logger.info("Disconnected from MT5.")
 
+    @ensure_connection
     def get_current_price(self, symbol: str) -> Optional[Dict[str, float]]:
         """
         Get current bid, ask, and spread for a symbol.
@@ -92,6 +114,7 @@ class MT5Client:
             "spread": spread
         }
 
+    @ensure_connection
     def get_bars(self, symbol: str, timeframe_str: str, count: int) -> Optional[pd.DataFrame]:
         """
         Get historical OHLCV data.
@@ -128,6 +151,7 @@ class MT5Client:
         df.set_index('time', inplace=True)
         return df
 
+    @ensure_connection
     def get_open_positions(self) -> List[Dict[str, Any]]:
         """
         Get all open positions.
@@ -142,6 +166,7 @@ class MT5Client:
             
         return [pos._asdict() for pos in positions]
 
+    @ensure_connection
     def get_account_info(self) -> Optional[Dict[str, float]]:
         """
         Get account equity, balance, and margin.
@@ -161,6 +186,7 @@ class MT5Client:
             "free_margin": info.margin_free
         }
 
+    @ensure_connection
     def send_market_order(self, symbol: str, direction: str, lot: float, sl: float, tp: float, comment: str = "") -> Optional[int]:
         """
         Send a market order.
@@ -217,6 +243,7 @@ class MT5Client:
         logger.info(f"Order sent successfully. Ticket: {result.order}")
         return result.order
 
+    @ensure_connection
     def close_position(self, ticket: int) -> bool:
         """
         Close an existing position by ticket.
@@ -260,6 +287,7 @@ class MT5Client:
         logger.info(f"Position {ticket} closed successfully.")
         return True
 
+    @ensure_connection
     def close_all_positions(self) -> int:
         """
         Close all open positions.
@@ -282,14 +310,19 @@ class MT5Client:
 
 if __name__ == "__main__":
     import yaml
+    import os
+    from dotenv import load_dotenv
+    
+    load_dotenv()
     
     # Load settings
     try:
         with open("config/settings.yaml", "r") as f:
             settings = yaml.safe_load(f)
-        login = settings['broker']['login']
-        password = settings['broker']['password']
-        server = settings['broker']['server']
+        login_val = os.getenv('MT5_LOGIN', settings['broker'].get('login'))
+        login = int(login_val) if login_val else 0
+        password = os.getenv('MT5_PASSWORD', settings['broker'].get('password', ''))
+        server = os.getenv('MT5_SERVER', settings['broker'].get('server', ''))
         symbol = settings['broker']['symbol']
     except Exception as e:
         logger.error(f"Failed to load settings.yaml: {e}")

@@ -144,6 +144,38 @@ def selector():
 def calendar():
     return jsonify({"news": "No high impact news"})
 
+@app.route('/api/health')
+def health():
+    try:
+        hb_path = Path("data/heartbeat.txt")
+        if not hb_path.exists():
+            return jsonify({"status": "degraded", "reason": "No heartbeat file found. Main loop not running?"}), 503
+            
+        with open(hb_path, "r") as f:
+            hb_str = f.read().strip()
+            
+        hb_time = datetime.fromisoformat(hb_str)
+        # Check if heartbeat is older than 6 minutes (main loop runs every 5)
+        diff = (datetime.utcnow() - hb_time).total_seconds()
+        
+        if diff > 360:
+            return jsonify({
+                "status": "degraded",
+                "reason": "Main loop stalled",
+                "last_heartbeat": hb_str,
+                "seconds_since_last": diff
+            }), 503
+            
+        return jsonify({
+            "status": "healthy",
+            "last_heartbeat": hb_str,
+            "seconds_since_last": diff
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Health check failed: {e}")
+        return jsonify({"status": "error", "reason": str(e)}), 500
+
 if __name__ == '__main__':
     # Ensure data dir exists
     Path("data").mkdir(exist_ok=True)

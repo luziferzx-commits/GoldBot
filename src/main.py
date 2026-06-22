@@ -13,9 +13,12 @@ from src.execution.order_manager import OrderManager
 from src.notify.telegram_bot import TelegramNotifier
 from src.summary.daily_report import DailyReporter
 from src.strategy.ai_strategy import AIStrategy
+from src.strategy.silver_bullet_strategy import SilverBulletStrategy
 from src.risk.risk_manager import RiskManager
 from src.calendar.economic_calendar import EconomicCalendar
 from src.ai.learning_mode import LearningMode
+from src.analysis.external_factors import ExternalFactors
+from src.analysis.sentiment_analyzer import SentimentAnalyzer
 
 logging.basicConfig(
     level=logging.INFO,
@@ -49,9 +52,12 @@ class GoldBot:
         # Strategy & Logic
         is_learning = self.settings['ai'].get('learning_mode', True)
         self.strategy = AIStrategy(is_learning=is_learning)
+        self.sb_strategy = SilverBulletStrategy(self.strategy)
         self.risk_manager = RiskManager()
         self.calendar = EconomicCalendar()
         self.learning_mode = LearningMode(is_learning=is_learning)
+        self.external_factors = ExternalFactors()
+        self.sentiment_analyzer = SentimentAnalyzer()
         
         # Notifications
         self.notifier = TelegramNotifier(self.db)
@@ -79,9 +85,9 @@ class GoldBot:
 
     def fetch_and_evaluate(self):
         """
-        Main logic executed every 5 minutes.
+        Main logic executed every 1 hour (or 5 min, depending on schedule).
         """
-        logger.info("Executing 5-minute cycle...")
+        logger.info("Executing main cycle...")
         
         # 1. Check Connection
         if not self.client.connect():
@@ -99,6 +105,35 @@ class GoldBot:
         h1 = self.manager.get_data("H1")
         d1 = self.manager.get_data("D1")
         mn1 = self.manager.get_data("MN1")
+        
+        # Fetch external data for live
+        try:
+            today_str = datetime.now().strftime('%Y-%m-%d')
+            self.external_factors.load_historical_data(today_str, today_str)
+            if self.external_factors.hist_data is not None and not self.external_factors.hist_data.empty:
+                ext_latest = self.external_factors.hist_data.iloc[-1]
+                for col in ext_latest.index:
+                    h1[col] = ext_latest[col]
+            else:
+                for col in ['dxy_change', 'us10y_change', 'vix_level', 'oil_change', 'sp500_change']:
+                    h1[col] = 0.0
+                    if col == 'vix_level': h1[col] = 15.0
+            
+            h1['sentiment_score'] = self.sentiment_analyzer.analyze_sentiment()
+            
+            # Recompute bias
+            h1['gold_bias'] = 0.0
+            h1.loc[h1['dxy_change'] > 0.3, 'gold_bias'] -= 0.2
+            h1.loc[h1['dxy_change'] < -0.3, 'gold_bias'] += 0.2
+            h1.loc[h1['vix_level'] > 25, 'gold_bias'] += 0.15
+            h1.loc[h1['vix_level'] > 35, 'gold_bias'] += 0.3
+            h1.loc[h1['us10y_change'] > 0.05, 'gold_bias'] -= 0.15
+            h1.loc[h1['sp500_change'] < -1.0, 'gold_bias'] += 0.2
+        except Exception as e:
+            logger.error(f"Error fetching external factors: {e}")
+            for col in ['dxy_change', 'us10y_change', 'vix_level', 'oil_change', 'sp500_change', 'gold_bias', 'sentiment_score']:
+                h1[col] = 0.0
+                if col == 'vix_level': h1[col] = 15.0
         
         # 3. Check Force Close Time (e.g. 23:45)
         now_hm = datetime.now().strftime("%H:%M")
@@ -125,7 +160,12 @@ class GoldBot:
             return
             
         # 6. Run Strategy
-        signal = self.strategy.generate_signal(m5, m15, h1, d1, mn1)
+        # First check Silver Bullet
+        signal = self.sb_strategy.generate_signal(m5, m15, h1, d1, mn1)
+        if signal.direction == "HOLD":
+            # Fallback to Day Trade Strategy
+            signal = self.strategy.generate_signal(m5, m15, h1, d1, mn1)
+            
         logger.info(f"Signal generated: {signal}")
         
         if signal.direction in ["BUY", "SELL"]:
@@ -156,15 +196,15 @@ class GoldBot:
         self.notifier.start_polling()
         self.notifier.send_message("🤖 <b>GoldBot Started</b>\nMonitoring XAUUSD...")
         
-        # Schedule 5-minute loop (e.g., at :00, :05, :10...)
-        schedule.every(5).minutes.at(":00").do(self.fetch_and_evaluate)
-        
         # Daily Report at 00:05
         schedule.every().day.at("00:05").do(self.reporter.send_report)
         
-        logger.info("Bot Main Loop Running. Press Ctrl+C to stop.")
+    def run(self):
+        logger.info("Starting Main Loop...")
+        # Schedule the cycle every 5 minutes for Silver Bullet M5 precision
+        schedule.every(5).minutes.do(self.fetch_and_evaluate)
         
-        # First immediate run
+        # Initial run
         self.fetch_and_evaluate()
         
         while self.is_running:
@@ -184,3 +224,4 @@ if __name__ == "__main__":
     signal.signal(signal.SIGINT, bot.stop)
     signal.signal(signal.SIGTERM, bot.stop)
     bot.start()
+    bot.run()

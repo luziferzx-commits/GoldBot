@@ -24,7 +24,7 @@ class FeatureBuilder:
         self.scaler = MinMaxScaler()
         self.is_fitted = False
 
-    def _compute_m5_features(self, df: pd.DataFrame) -> pd.DataFrame:
+    def _compute_base_features(self, df: pd.DataFrame) -> pd.DataFrame:
         df = df.copy()
         
         # Technical Indicators
@@ -103,7 +103,7 @@ class FeatureBuilder:
             logger.error("Not enough M5 data to build features.")
             return None
             
-        df = self._compute_m5_features(m5_data)
+        df = self._compute_base_features(m5_data)
         
         # Select columns to use as features (29 features total)
         feature_cols = [

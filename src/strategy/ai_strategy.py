@@ -42,8 +42,8 @@ class AIStrategy(BaseStrategy):
         
         if model_path.exists():
             try:
-                # FeatureBuilder currently outputs 16 features
-                self.model = GoldLSTM(input_size=16)
+                # FeatureBuilder currently outputs 29 features
+                self.model = GoldLSTM(input_size=29)
                 self.model.load_state_dict(torch.load(model_path))
                 self.model.eval()
                 logger.info(f"Loaded AI model from {model_path}")
@@ -72,15 +72,7 @@ class AIStrategy(BaseStrategy):
             return Signal("HOLD", 0.0, reason=f"ADR limit reached ({adr_pct:.1%})")
             
         # AI Prediction
-        ai_direction = "HOLD"
-        ai_conf = 0.0
-        
-        if self.model is not None:
-            tensor = self.feature_builder.build_features(m5_data)
-            if tensor is not None and len(tensor) > 0:
-                # Use the last sequence
-                seq = tensor[-1]
-                ai_direction, ai_conf = self.model.predict(seq)
+        ai_direction, ai_conf = self.get_raw_prediction(h1_data)
                 
         # If AI is confident, use it, else Fallback
         if ai_conf >= self.conf_threshold and ai_direction in ["BUY", "SELL"]:
@@ -104,7 +96,7 @@ class AIStrategy(BaseStrategy):
                 
             # M15 basic confirmation (strength > 0.5 logic)
             if not m15_confirmed or m15_strength <= 0.5:
-                return Signal("HOLD", 0.0, reason="M15 Pattern not confirmed or weak")
+                return Signal("HOLD", 0.0, reason="Conditions not met")
                 
             return Signal(
                 direction=ai_direction,
@@ -117,6 +109,18 @@ class AIStrategy(BaseStrategy):
             sig = self.fallback_strategy.generate_signal(m5_data, m15_data, h1_data, daily_data, monthly_data)
             sig.reason += " (FALLBACK)"
             return sig
+
+    def get_raw_prediction(self, h1_data: pd.DataFrame) -> tuple[str, float]:
+        """
+        Returns raw (direction, confidence) from the AI model.
+        Used by other strategies like Silver Bullet.
+        """
+        if self.model is not None:
+            tensor = self.feature_builder.build_features(h1_data)
+            if tensor is not None and len(tensor) > 0:
+                seq = tensor[-1]
+                return self.model.predict(seq)
+        return "HOLD", 0.0
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)

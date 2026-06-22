@@ -37,12 +37,18 @@ class BacktestEngine:
         self.day_strategy = DayTradeStrategy()
         
         from src.analysis.external_factors import ExternalFactors
+        from src.strategy.ai_strategy import AIStrategy
+        from src.strategy.silver_bullet_strategy import SilverBulletStrategy
+        
         self.external_factors = ExternalFactors()
+        self.ai_strategy = AIStrategy()
+        self.sb_strategy = SilverBulletStrategy(self.ai_strategy)
         
         # Load Model
-        model_path = Path("models/versions/model_v2.pt")
+        model_path = Path("models/learning/model_demo.pt")
         if not model_path.exists():
-            model_path = Path("models/learning/model_demo.pt")
+            logger.warning("Learning model not found, falling back to version search...")
+            # We could fallback to load_best_version() here, but for now we expect the learning model.
             
         self.model = None
         if model_path.exists():
@@ -124,68 +130,68 @@ class BacktestEngine:
             logger.error("Failed to load historical CSVs.")
             return
 
+        h1 = manager.get_data("H1")
         m5 = manager.get_data("M5")
-        if m5 is None or len(m5) < 100:
-            logger.error("Insufficient M5 data.")
+        if h1 is None or len(h1) < 100 or m5 is None:
+            logger.error("Insufficient data.")
             return
+            
+        m5.index = pd.to_datetime(m5.index, utc=True).tz_localize(None)
             
         logger.info("Pre-computing MTF indicators...")
         mn1_aligned = self.pre_compute_mn1(manager.get_data("MN1"))
         d1_aligned = self.pre_compute_d1(manager.get_data("D1"))
-        h1_aligned = self.pre_compute_h1(manager.get_data("H1"))
-        m15_aligned = self.pre_compute_m15(manager.get_data("M15"))
         
         # Calculate ATR MA 20 on D1
         d1_aligned['D1_ATR_MA_20'] = d1_aligned['D1_ATR'].rolling(window=20).mean()
 
         # Fetch external data
-        start_date = m5.index.min().strftime('%Y-%m-%d')
-        end_date = m5.index.max().strftime('%Y-%m-%d')
+        start_date = h1.index.min().strftime('%Y-%m-%d')
+        end_date = h1.index.max().strftime('%Y-%m-%d')
         self.external_factors.load_historical_data(start_date, end_date)
         
-        # Merge external data into m5
+        # Merge external data into h1
         if self.external_factors.hist_data is not None and not self.external_factors.hist_data.empty:
             ext_df = self.external_factors.hist_data.copy()
-            ext_df.index = pd.to_datetime(ext_df.index).tz_localize(None)
-            m5['date_only'] = m5.index.normalize()
+            ext_df.index = pd.to_datetime(ext_df.index, utc=True).tz_localize(None)
+            h1.index = pd.to_datetime(h1.index, utc=True).tz_localize(None)
+            h1['date_only'] = h1.index.normalize()
             
-            m5 = m5.merge(ext_df, left_on='date_only', right_index=True, how='left')
-            m5.drop(columns=['date_only'], inplace=True)
-            m5 = m5.ffill().fillna(0.0)
+            h1 = h1.merge(ext_df, left_on='date_only', right_index=True, how='left')
+            h1.drop(columns=['date_only'], inplace=True)
+            h1 = h1.ffill().fillna(0.0)
             
             # Recompute gold bias
-            m5['gold_bias'] = 0.0
-            m5.loc[m5['dxy_change'] > 0.3, 'gold_bias'] -= 0.2
-            m5.loc[m5['dxy_change'] < -0.3, 'gold_bias'] += 0.2
-            m5.loc[m5['vix_level'] > 25, 'gold_bias'] += 0.15
-            m5.loc[m5['vix_level'] > 35, 'gold_bias'] += 0.3
-            m5.loc[m5['us10y_change'] > 0.05, 'gold_bias'] -= 0.15
-            m5.loc[m5['sp500_change'] < -1.0, 'gold_bias'] += 0.2
+            h1['gold_bias'] = 0.0
+            h1.loc[h1['dxy_change'] > 0.3, 'gold_bias'] -= 0.2
+            h1.loc[h1['dxy_change'] < -0.3, 'gold_bias'] += 0.2
+            h1.loc[h1['vix_level'] > 25, 'gold_bias'] += 0.15
+            h1.loc[h1['vix_level'] > 35, 'gold_bias'] += 0.3
+            h1.loc[h1['us10y_change'] > 0.05, 'gold_bias'] -= 0.15
+            h1.loc[h1['sp500_change'] < -1.0, 'gold_bias'] += 0.2
             
-            m5['sentiment_score'] = 0.0 # Mocked for backtest
+            h1['sentiment_score'] = 0.0 # Mocked for backtest
         else:
             logger.warning("Failed to load external factors, using 0.0")
             for col in ['dxy_change', 'us10y_change', 'vix_level', 'oil_change', 'sp500_change', 'btc_change', 'gold_bias', 'sentiment_score']:
-                m5[col] = 0.0
-                if col == 'vix_level': m5[col] = 15.0
+                h1[col] = 0.0
+                if col == 'vix_level': h1[col] = 15.0
 
-        # Merge onto M5 using forward fill
-        logger.info("Aligning MTF data to M5 (preventing lookahead bias)...")
-        m5.sort_index(inplace=True)
+        # Merge onto H1 using forward fill
+        logger.info("Aligning MTF data to H1 (preventing lookahead bias)...")
+        h1.sort_index(inplace=True)
+        mn1_aligned.index = pd.to_datetime(mn1_aligned.index, utc=True).tz_localize(None)
         mn1_aligned.sort_index(inplace=True)
+        d1_aligned.index = pd.to_datetime(d1_aligned.index, utc=True).tz_localize(None)
         d1_aligned.sort_index(inplace=True)
-        h1_aligned.sort_index(inplace=True)
-        m15_aligned.sort_index(inplace=True)
         
-        m5 = pd.merge_asof(m5, mn1_aligned, left_index=True, right_index=True, direction='backward')
-        m5 = pd.merge_asof(m5, d1_aligned, left_index=True, right_index=True, direction='backward')
-        m5 = pd.merge_asof(m5, h1_aligned, left_index=True, right_index=True, direction='backward')
-        m5 = pd.merge_asof(m5, m15_aligned, left_index=True, right_index=True, direction='backward')
+        h1 = pd.merge_asof(h1, mn1_aligned, left_index=True, right_index=True, direction='backward')
+        h1 = pd.merge_asof(h1, d1_aligned, left_index=True, right_index=True, direction='backward')
 
         logger.info("Pre-computing AI Features...")
         fb = FeatureBuilder(seq_len=60)
         # Using the feature builder logic inside builder
-        df_features = fb._compute_m5_features(m5)
+        df_features = fb._compute_base_features(h1)
         feature_cols = [
             'close', 'EMA_9', 'EMA_21', 'EMA_50', 'RSI_14', 
             'MACD', 'MACD_hist', 'ATR_14', 'BB_upper', 'BB_lower', 
@@ -223,10 +229,10 @@ class BacktestEngine:
         weekly_pnl = 0.0
         stop_trading_today = False
         
-        logger.info("Starting M5 walk-forward loop...")
+        logger.info("Starting H1 walk-forward loop...")
         
         # Walk-forward 5 segments
-        total_bars = len(m5)
+        total_bars = len(h1)
         segment_size = total_bars // 5
         current_segment = 1
 
@@ -239,8 +245,8 @@ class BacktestEngine:
                 logger.info(f"Completed Walk-Forward Segment {current_segment}")
                 current_segment += 1
 
-            row = m5.iloc[i]
-            timestamp = m5.index[i]
+            row = h1.iloc[i]
+            timestamp = h1.index[i]
             hour = timestamp.hour
             
             day = timestamp.date()
@@ -324,19 +330,32 @@ class BacktestEngine:
                 seq = features_tensor[i - 60 + 1 : i + 1].unsqueeze(0)
                 direction, conf = self.model.predict(seq)
                 
-                # 4. Filter AI Signal
-                h1_trend = row.get('H1_trend', "SIDEWAYS")
-                h1_trend_str = "BUY" if h1_trend == "UP" else ("SELL" if h1_trend == "DOWN" else "SIDEWAYS")
+                # Check Silver Bullet First
+                # M5 data up to current timestamp
+                m5_slice = m5[m5.index <= timestamp]
+                h1_slice = h1[h1.index <= timestamp]
+                sb_signal = self.sb_strategy.generate_signal(m5_slice, None, h1_slice, d1_aligned, mn1_aligned)
                 
-                # Refine confidence using day trade strategy
-                conf, lot_multiplier = self.day_strategy.refine_confidence(row, hour, direction, conf)
-                
-                if i < 1000 and (i % 100 == 0):
-                    logger.info(f"[{i}] Dir: {direction} | Conf: {conf:.2f} | H1 Trend: {h1_trend_str} | ATR: {d1_atr:.2f} | ATR_MA: {row.get('D1_ATR_MA_20', 0):.2f}")
+                if sb_signal.direction in ["BUY", "SELL"]:
+                    direction = sb_signal.direction
+                    conf = sb_signal.confidence
+                    lot_multiplier = 1.0 # Standard lot for SB
+                    logger.info(f"[{i}] Silver Bullet Signal: {direction} | Conf: {conf:.2f}")
+                else:
+                    # 4. Filter AI Signal
+                    h1_trend = row.get('H1_trend', "SIDEWAYS")
+                    h1_trend_str = "BUY" if h1_trend == "UP" else ("SELL" if h1_trend == "DOWN" else "SIDEWAYS")
+                    
+                    # Refine confidence using day trade strategy
+                    conf, lot_multiplier = self.day_strategy.refine_confidence(row, hour, direction, conf)
+                    
+                    if i < 1000 and (i % 100 == 0):
+                        logger.info(f"[{i}] Dir: {direction} | Conf: {conf:.2f} | H1 Trend: {h1_trend_str} | ATR: {d1_atr:.2f} | ATR_MA: {row.get('D1_ATR_MA_20', 0):.2f}")
                 
                 
                 if conf >= 0.0 and direction in ["BUY", "SELL"]:
-                    if direction == h1_trend_str or h1_trend_str == "SIDEWAYS":
+                    # Check H1 trend only if not Silver Bullet (Silver Bullet handles its own checks)
+                    if sb_signal.direction in ["BUY", "SELL"] or direction == row.get('H1_trend_str', direction) or row.get('H1_trend_str', 'SIDEWAYS') == "SIDEWAYS":
                         current_price = row['close']
                         
                         # Adjust risk if weekly PnL > 3%
@@ -393,9 +412,9 @@ class BacktestEngine:
                 'drawdown': dd
             })
 
-        self.generate_report(trades, equity_curve, max_dd, m5)
+        self.generate_report(trades, equity_curve, max_dd, h1)
 
-    def generate_report(self, trades, equity_curve, max_dd, m5_data):
+    def generate_report(self, trades, equity_curve, max_dd, h1_data):
         logger.info("Generating statistics...")
         total_trades = len(trades)
         wins = [t for t in trades if t['net_pnl'] > 0]
@@ -485,8 +504,8 @@ class BacktestEngine:
             report += f"Worst Month: {worst_month_date} -${abs(worst_month):,.2f}\n"
             
         # External Context Snapshot
-        if not m5_data.empty:
-            last_row = m5_data.iloc[-1]
+        if not h1_data.empty:
+            last_row = h1_data.iloc[-1]
             report += "\n[ Market Context Snapshot (Latest Bar) ]\n"
             report += f"DXY Change: {last_row.get('dxy_change', 0.0):.2f}%\n"
             report += f"VIX Level: {last_row.get('vix_level', 0.0):.1f}\n"

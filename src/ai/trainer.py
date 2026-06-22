@@ -10,6 +10,8 @@ from src.ai.model import GoldLSTM
 from src.ai.feature_builder import FeatureBuilder
 from src.ai.model_versioning import ModelVersioning
 from src.data.timeframe_manager import TimeframeManager
+import pandas as pd
+from src.analysis.external_factors import ExternalFactors
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +25,7 @@ class ModelTrainer:
         self.seq_len = seq_len
         self.versioning = ModelVersioning()
         self.builder = FeatureBuilder(seq_len=seq_len)
+        self.external_factors = ExternalFactors()
 
     def _prepare_labels(self, m5_data) -> torch.Tensor:
         """
@@ -32,8 +35,16 @@ class ModelTrainer:
         # Simple heuristic: if next 5 bars max high > SL, and close is higher -> BUY
         # For skeleton, just random labels
         n_samples = len(m5_data) - self.seq_len + 1
-        labels = np.random.randint(0, 3, size=n_samples)
-        return torch.tensor(labels, dtype=torch.long)
+        # Realistic Labels: if next bar closes higher -> BUY (0), lower -> SELL (1), flat -> HOLD (2)
+        # Using shift to peek into the future
+        future_returns = m5_data['close'].shift(-1) - m5_data['close']
+        labels = np.zeros(len(m5_data)) # Default BUY
+        labels[future_returns < -0.5] = 1 # SELL
+        labels[(future_returns >= -0.5) & (future_returns <= 0.5)] = 2 # HOLD
+        
+        # We need to slice the labels to match the sequence outputs
+        seq_labels = labels[self.seq_len - 1:]
+        return torch.tensor(seq_labels, dtype=torch.long)
 
     def train(self, epochs: int = 50, batch_size: int = 32):
         """
@@ -43,17 +54,37 @@ class ModelTrainer:
             logger.error("Failed to load historical data for training.")
             return False
             
-        m5_data = self.manager.get_data("M5")
-        if m5_data is None or len(m5_data) < 1000:
-            logger.error("Not enough M5 data.")
+        h1_data = self.manager.get_data("H1")
+        if h1_data is None or len(h1_data) < 1000:
+            logger.error("Not enough H1 data.")
             return False
             
+        # Fetch external data
+        start_date = h1_data.index.min().strftime('%Y-%m-%d')
+        end_date = h1_data.index.max().strftime('%Y-%m-%d')
+        self.external_factors.load_historical_data(start_date, end_date)
+        
+        if self.external_factors.hist_data is not None and not self.external_factors.hist_data.empty:
+            ext_df = self.external_factors.hist_data.copy()
+            ext_df.index = pd.to_datetime(ext_df.index, utc=True).tz_localize(None)
+            h1_data.index = pd.to_datetime(h1_data.index, utc=True).tz_localize(None) # Ensure datetime index
+            h1_data['date_only'] = h1_data.index.normalize()
+            h1_data = h1_data.merge(ext_df, left_on='date_only', right_index=True, how='left')
+            h1_data.drop(columns=['date_only'], inplace=True)
+            h1_data = h1_data.ffill().fillna(0.0)
+            h1_data['gold_bias'] = 0.0
+            h1_data['sentiment_score'] = 0.0
+        else:
+            for col in ['dxy_change', 'us10y_change', 'vix_level', 'oil_change', 'sp500_change', 'gold_bias', 'sentiment_score']:
+                h1_data[col] = 0.0
+                if col == 'vix_level': h1_data[col] = 15.0
+            
         # Build features
-        X = self.builder.build_features(m5_data, fit_scaler=True)
+        X = self.builder.build_features(h1_data, fit_scaler=True)
         if X is None:
             return False
             
-        y = self._prepare_labels(m5_data)
+        y = self._prepare_labels(h1_data)
         
         # Ensure lengths match
         min_len = min(len(X), len(y))

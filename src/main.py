@@ -25,6 +25,8 @@ from src.strategy.asian_range_strategy import AsianRangeStrategy
 from src.strategy.sge_strategy import SGEStrategy
 from src.strategy.po3_strategy import PO3Strategy
 from src.strategy.overlap_scalper import OverlapScalper
+from src.strategy.day_trade_strategy import DayTradeStrategy
+from src.strategy.news_straddle_strategy import NewsStraddleStrategy
 from src.risk.risk_manager import RiskManager
 from src.calendar.economic_calendar import EconomicCalendar
 from src.ai.learning_mode import LearningMode
@@ -57,6 +59,13 @@ class GoldBot:
             
         # Core Modules
         self.db = Database()
+
+        self.managers = {}
+        self.order_managers = {}
+        for sym in self.symbols:
+            self.managers[sym] = TimeframeManager(self.client, sym)
+            self.order_managers[sym] = OrderManager(self.client, self.db, sym)
+
         
         login_val = os.getenv('MT5_LOGIN', self.settings['broker'].get('login'))
         self.client = MT5Client(
@@ -64,11 +73,11 @@ class GoldBot:
             password=os.getenv('MT5_PASSWORD', self.settings['broker'].get('password')),
             server=os.getenv('MT5_SERVER', self.settings['broker'].get('server'))
         )
-        self.symbol = self.settings['broker']['symbol']
-        self.manager = TimeframeManager(self.client, self.symbol)
-        self.order_manager = OrderManager(self.client, self.db, self.symbol)
+        self.symbols = self.settings['broker'].get('symbols', [self.settings['broker'].get('symbol', 'XAUUSDm')])
         
-        self.manager = TimeframeManager(self.client, self.settings['broker']['symbol'])
+        
+        
+        
         
         # Strategies
         is_learning = self.settings['ai'].get('learning_mode', True)
@@ -78,6 +87,8 @@ class GoldBot:
         self.sge_strategy = SGEStrategy(self.strategy)
         self.po3_strategy = PO3Strategy(self.strategy)
         self.overlap_scalper = OverlapScalper(self.strategy)
+        self.day_trade_strategy = DayTradeStrategy(self.strategy)
+        self.news_straddle = NewsStraddleStrategy(self.calendar)
         
         # Strategy Selector
         self.selector = StrategySelector(self.db, {
@@ -86,7 +97,8 @@ class GoldBot:
             "asian_range": self.asian_strategy,
             "sge": self.sge_strategy,
             "po3": self.po3_strategy,
-            "overlap": self.overlap_scalper
+            "overlap": self.overlap_scalper,
+            "day_trade": self.day_trade_strategy
         })
         
         # Filters
@@ -118,104 +130,84 @@ class GoldBot:
 
     def handle_stop_command(self):
         self.notifier.send_message("Stopping bot and closing all positions...")
-        self.order_manager.force_close_all()
+        for om in self.order_managers.values(): om.force_close_all()
         self.is_running = False
         return "Bot stopped."
 
     def handle_close_all(self):
-        self.order_manager.close_all_trades(reason="MANUAL_TG_CMD")
+        for om in self.order_managers.values(): om.close_all_trades(reason="MANUAL_TG_CMD")
         return "All positions closed."
 
     def fetch_and_evaluate(self):
-        """
-        Main logic executed every 1 hour (or 5 min, depending on schedule).
-        """
         logger.info("Executing main cycle...")
-        
-        # 1. Check Connection
         if not self.client.connect():
             logger.error("MT5 disconnected. Skipping cycle.")
             self.notifier.send_alert("MT5 Disconnected!")
             return
             
-        # 2. Fetch Data
-        if not self.manager.fetch_all():
-            logger.error("Failed to fetch data. Skipping cycle.")
+        for sym in self.symbols:
+            self._process_symbol(sym)
+            
+        self._write_heartbeat()
+
+    def _process_symbol(self, symbol: str):
+        manager = self.managers[symbol]
+        order_manager = self.order_managers[symbol]
+        
+        if not manager.fetch_all():
+            logger.error(f"Failed to fetch data for {symbol}.")
             return
             
-        m5 = self.manager.get_data("M5")
-        m15 = self.manager.get_data("M15")
-        h1 = self.manager.get_data("H1")
-        d1 = self.manager.get_data("D1")
-        mn1 = self.manager.get_data("MN1")
+        m5 = manager.get_data("M5")
+        m15 = manager.get_data("M15")
+        h1 = manager.get_data("H1")
+        d1 = manager.get_data("D1")
+        mn1 = manager.get_data("MN1")
         
-        # Fetch external data for live
         try:
             today_str = datetime.now().strftime('%Y-%m-%d')
             self.external_factors.load_historical_data(today_str, today_str)
             if self.external_factors.hist_data is not None and not self.external_factors.hist_data.empty:
                 ext_latest = self.external_factors.hist_data.iloc[-1]
-                for col in ext_latest.index:
-                    h1[col] = ext_latest[col]
-            else:
-                for col in ['dxy_change', 'us10y_change', 'vix_level', 'oil_change', 'sp500_change']:
-                    h1[col] = 0.0
-                    if col == 'vix_level': h1[col] = 15.0
-            
-            score, _, _ = self.sentiment_analyzer.fetch_and_analyze()
-            h1['sentiment_score'] = score
-            
-            # Recompute bias
-            h1['gold_bias'] = 0.0
-            h1.loc[h1['dxy_change'] > 0.3, 'gold_bias'] -= 0.2
-            h1.loc[h1['dxy_change'] < -0.3, 'gold_bias'] += 0.2
-            h1.loc[h1['vix_level'] > 25, 'gold_bias'] += 0.15
-            h1.loc[h1['vix_level'] > 35, 'gold_bias'] += 0.3
-            h1.loc[h1['us10y_change'] > 0.05, 'gold_bias'] -= 0.15
-            h1.loc[h1['sp500_change'] < -1.0, 'gold_bias'] += 0.2
-        except Exception as e:
-            logger.error(f"Error fetching external factors: {e}")
-            for col in ['dxy_change', 'us10y_change', 'vix_level', 'oil_change', 'sp500_change', 'gold_bias', 'sentiment_score']:
-                h1[col] = 0.0
-                if col == 'vix_level': h1[col] = 15.0
-        
-        # 3. Check Force Close Time (e.g. 23:45)
+                h1['DXY'] = ext_latest['DXY']
+                h1['US10Y'] = ext_latest['US10Y']
+        except:
+            pass
+
         now_hm = datetime.now().strftime("%H:%M")
         if now_hm == self.settings['trading']['force_close_time']:
-            logger.info("Force close time reached.")
-            self.order_manager.force_close_all()
+            order_manager.force_close_all()
             return
             
-        # Priority #2: Weekend Flat (Friday Close)
         now_dt = datetime.now()
         if now_dt.weekday() == 4 and now_dt.strftime("%H:%M") >= "23:00":
-            logger.info("Weekend Flat active. Closing all positions for the weekend.")
-            self.order_manager.force_close_all()
+            order_manager.force_close_all()
             return
-            
-        # 3.5 Check recently closed trades for Online Learning
+
         self._trigger_online_learning(h1)
 
-        # 4. Check Circuit Breaker (Handled by RiskManager internally, but let's update equity first)
         account_info = self.client.get_account_info()
         equity = account_info.get('equity', 0.0)
         self.db.log_equity({
             "equity": equity,
             "balance": account_info.get('balance', 0.0),
-            "daily_pnl": 0.0, # Needs calculation
+            "daily_pnl": 0.0,
             "daily_pnl_pct": 0.0,
             "drawdown": 0.0,
             "drawdown_pct": 0.0
         })
         
-        # 5. Check News
+        # Priority #4: News Straddle Strategy Check
+        straddle_signal = self.news_straddle.generate_signal(m5, m15, h1, d1, mn1)
+        if straddle_signal.direction == "STRADDLE":
+            logger.info("Executing News Straddle Strategy!")
+            order_manager.open_trade(straddle_signal, 0.01, 0, 0) # Risk manager is bypassed for straddle fixed lot or handled inside
+            return # Skip rest of cycle
+        
         if self.calendar.is_news_time():
-            logger.info("High impact news window. Skipping trading.")
             return
             
-        # 6. Run Strategy (24-Hour Routing via StrategySelector)
         current_hour_gmt7 = (datetime.utcnow() + pd.Timedelta(hours=7)).hour
-        
         session = "OTHER"
         if 8 <= current_hour_gmt7 < 10: session = "SGE"
         elif 10 <= current_hour_gmt7 < 15: session = "ASIAN"
@@ -227,17 +219,14 @@ class GoldBot:
         atr = h1['D1_ATR'].iloc[-1] if 'D1_ATR' in h1.columns else 5.0
         h1_trend = h1['H1_trend'].iloc[-1] if 'H1_trend' in h1.columns else "SIDEWAYS"
         
-        # Priority #2: Manage Open Positions (Breakeven & Trailing Stop)
-        self.order_manager.manage_open_positions(atr)
+        order_manager.manage_open_positions(atr)
         
         from src.analysis.market_regime import MarketRegime
         regime_analyzer = MarketRegime()
         m5 = regime_analyzer.analyze(m5)
         regime = m5['market_regime'].iloc[-1]
         
-        # Ensure PO3 records manipulation phase continuously
         self.po3_strategy.generate_signal(m5, m15, h1, d1, mn1)
-        
         ai_direction, ai_conf = self.strategy.get_raw_prediction(m5)
         
         context = MarketContext(
@@ -245,7 +234,7 @@ class GoldBot:
             market_regime=regime,
             session=session,
             ai_confidence=ai_conf,
-            volatility_ratio=atr / 5.0, # Simple proxy
+            volatility_ratio=atr / 5.0,
             volume_spike=m5['tick_volume'].iloc[-1] > m5['tick_volume'].rolling(20).mean().iloc[-1] * 1.5,
             h1_trend=h1_trend,
             asian_range_formed=self.po3_strategy.asian_high > 0,
@@ -256,19 +245,20 @@ class GoldBot:
         from src.strategy.base import Signal
         signal = Signal("HOLD", 0.0)
         
-        if strategy_name == "SKIP":
-            logger.info(f"No trade - score too low ({score:.0f})")
-        else:
-            logger.info(f"StrategySelector chose {strategy_name} with score {score:.0f}")
+        if strategy_name != "SKIP":
             selected_strategy = self.selector.strategies[strategy_name]
             signal = selected_strategy.generate_signal(m5, m15, h1, d1, mn1)
-            signal.source = strategy_name # Used for logging to DB
+            signal.source = strategy_name
             
-        logger.info(f"Signal generated: {signal}")
-        
         if signal.direction in ["BUY", "SELL"]:
-            # 7. Risk Check
-            atr = 5.0 # Should be dynamic from ATR indicator
+            # Priority #3: Volatility-Adjusted TP
+            import pandas_ta as ta
+            adx_val = 0.0
+            if len(h1) > 14:
+                adx_df = ta.adx(h1['high'], h1['low'], h1['close'], length=14)
+                if adx_df is not None and not adx_df.empty:
+                    adx_val = adx_df[adx_df.columns[0]].iloc[-1]
+            
             approved, lot, sl, tp, reason = self.risk_manager.evaluate(
                 equity=equity,
                 entry_price=signal.entry_price,
@@ -277,16 +267,14 @@ class GoldBot:
             )
             
             if approved:
-                # 8. Execute
-                ticket = self.order_manager.open_trade(signal, lot, sl, tp)
+                if adx_val > 25.0:
+                    tp = 0.0 # Remove TP for heavy trend
+                    logger.info(f"ADX > 25 ({adx_val:.1f}). Removing TP to ride the trend.")
+                    
+                ticket = order_manager.open_trade(signal, lot, sl, tp)
                 if ticket:
                     self.notifier.send_trade_open(signal, lot, sl, tp)
-            else:
-                logger.info(f"Trade rejected by Risk Manager: {reason}")
-                
-        # 10. Write Heartbeat
-        self._write_heartbeat()
-        
+
     def _write_heartbeat(self):
         try:
             with open("data/heartbeat.txt", "w") as f:

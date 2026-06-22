@@ -26,20 +26,35 @@ class OrderManager:
         except:
             self.max_spread = 50
 
-    def _has_open_positions(self) -> bool:
-        """Check idempotency (only 1 open position per symbol)."""
+    def _can_pyramid(self) -> bool:
+        """Check idempotency and pyramiding logic. Max 3 positions, and all existing must be risk-free."""
         positions = mt5.positions_get(symbol=self.symbol)
-        if positions is None:
+        if not positions:
+            return True
+        
+        if len(positions) >= 3:
             return False
-        return len(positions) > 0
+            
+        for pos in positions:
+            # If SL is 0, it's not risk-free
+            if pos.sl == 0.0:
+                return False
+            # For BUY, SL must be >= open price
+            if pos.type == mt5.ORDER_TYPE_BUY and pos.sl < pos.price_open:
+                return False
+            # For SELL, SL must be <= open price
+            if pos.type == mt5.ORDER_TYPE_SELL and pos.sl > pos.price_open:
+                return False
+                
+        return True
 
     def open_trade(self, signal, lot: float, sl: float, tp: float) -> Optional[int]:
         """
         Open a trade with 3 retries.
         signal: an object containing direction, reason, signal_source, confidence
         """
-        if self._has_open_positions():
-            logger.warning(f"Position already exists for {self.symbol}. Skipping.")
+        if not self._can_pyramid():
+            logger.warning(f"Cannot open new trade for {self.symbol} (Max positions or existing not at BE). Skipping.")
             return None
             
         direction = signal.direction
@@ -52,6 +67,51 @@ class OrderManager:
             if spread_points > self.max_spread:
                 logger.warning(f"Spread {spread_points:.1f} exceeds max {self.max_spread}. Skipping trade.")
                 return None
+                
+        # Priority #4: News Straddle
+        if direction == "STRADDLE":
+            # Place a BUY_STOP and a SELL_STOP
+            # We assume entry_price is current price
+            # Distance: 25 pips (250 points)
+            dist = 250 * symbol_info.point
+            
+            buy_price = tick.ask + dist
+            sell_price = tick.bid - dist
+            
+            req_buy = {
+                "action": mt5.TRADE_ACTION_PENDING,
+                "symbol": self.symbol,
+                "volume": lot,
+                "type": mt5.ORDER_TYPE_BUY_STOP,
+                "price": buy_price,
+                "sl": buy_price - dist,
+                "tp": buy_price + (dist * 2),
+                "magic": 100000,
+                "comment": "STRADDLE_BUY",
+                "type_time": mt5.ORDER_TIME_GTC,
+                "type_filling": mt5.ORDER_FILLING_IOC,
+            }
+            req_sell = {
+                "action": mt5.TRADE_ACTION_PENDING,
+                "symbol": self.symbol,
+                "volume": lot,
+                "type": mt5.ORDER_TYPE_SELL_STOP,
+                "price": sell_price,
+                "sl": sell_price + dist,
+                "tp": sell_price - (dist * 2),
+                "magic": 100000,
+                "comment": "STRADDLE_SELL",
+                "type_time": mt5.ORDER_TIME_GTC,
+                "type_filling": mt5.ORDER_FILLING_IOC,
+            }
+            
+            res_b = mt5.order_send(req_buy)
+            res_s = mt5.order_send(req_sell)
+            
+            if res_b.retcode == mt5.TRADE_RETCODE_DONE and res_s.retcode == mt5.TRADE_RETCODE_DONE:
+                logger.info("News Straddle orders successfully placed.")
+                return res_b.order
+            return None
                 
         # Priority #3: Limit Orders
         is_limit = getattr(signal, 'entry_price', None) is not None and signal.entry_price > 0
@@ -66,6 +126,7 @@ class OrderManager:
             order_type = mt5.ORDER_TYPE_BUY if direction == "BUY" else mt5.ORDER_TYPE_SELL
             price = tick.ask if direction == "BUY" else tick.bid
         
+        # If tp == 0, omit it from the request for Volatility-Adjusted TP
         request = {
             "action": mt5.TRADE_ACTION_PENDING if is_limit else mt5.TRADE_ACTION_DEAL,
             "symbol": self.symbol,
@@ -73,12 +134,13 @@ class OrderManager:
             "type": order_type,
             "price": price,
             "sl": sl,
-            "tp": tp,
             "magic": 100000,
-            "comment": signal.reason[:20],
+            "comment": getattr(signal, 'reason', '')[:20],
             "type_time": mt5.ORDER_TIME_GTC,
             "type_filling": mt5.ORDER_FILLING_IOC,
         }
+        if tp > 0:
+            request["tp"] = tp
         
         # 3 Retries
         for attempt in range(3):

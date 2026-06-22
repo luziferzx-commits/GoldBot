@@ -572,7 +572,7 @@ class BacktestEngine:
         total_months = win_months + loss_months
         win_month_rate = win_months / total_months if total_months > 0 else 0
         
-        report = "[Backtest Results: Daily/Weekly Day Trade Strategy (50,000 Bars)]\n"
+        report = "[Backtest Results: Daily/Weekly Day Trade Strategy (500,000 Bars)]\n"
         report += "--------------------------\n"
         report += f"Total Trades: {total_trades}\n"
         report += f"Win Rate: {win_rate:.2%}\n"
@@ -606,7 +606,7 @@ class BacktestEngine:
             
         # Send Telegram first
         try:
-            from src.notify.telegram import TelegramNotifier
+            from src.notify.telegram_bot import TelegramNotifier
             notifier = TelegramNotifier()
             notifier.send_message(report)
             logger.info("Sent Telegram report.")

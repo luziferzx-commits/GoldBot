@@ -71,8 +71,15 @@ class ModelTrainer:
         Train the model using walk-forward validation.
         """
         if not self.manager.load_from_csv():
-            logger.error("Failed to load historical data for training.")
-            return False
+            logger.info("Historical data not found in CSV. Attempting to fetch from MT5...")
+            if not self.manager.client.connect():
+                logger.error("Failed to connect to MT5.")
+                return False
+            # Fetch 10 years of H1 (approx 60,000 bars)
+            if not self.manager.fetch_all(count=80000):
+                logger.error("Failed to fetch historical data for training.")
+                return False
+            self.manager.save_to_csv()
             
         h1_data = self.manager.get_data("H1")
         if h1_data is None or len(h1_data) < 1000:
@@ -215,6 +222,10 @@ class ModelTrainer:
         return True
 
 if __name__ == "__main__":
+    import os
+    from dotenv import load_dotenv
+    load_dotenv()
+    
     logging.basicConfig(level=logging.INFO)
     from src.broker.mt5_client import MT5Client
     import yaml
@@ -222,11 +233,17 @@ if __name__ == "__main__":
     try:
         with open("config/settings.yaml", "r") as f:
             settings = yaml.safe_load(f)
-        client = MT5Client(login=settings['broker']['login'], password=settings['broker']['password'], server=settings['broker']['server'])
+            
+        login_val = os.getenv('MT5_LOGIN', settings['broker'].get('login'))
+        login = int(login_val) if login_val else 0
+        password = os.getenv('MT5_PASSWORD', settings['broker'].get('password', ''))
+        server = os.getenv('MT5_SERVER', settings['broker'].get('server', ''))
+        
+        client = MT5Client(login=login, password=password, server=server)
         manager = TimeframeManager(client, settings['broker']['symbol'])
         trainer = ModelTrainer(manager)
         
-        # Run full training loop (reduced epochs for quick validation)
-        trainer.train(epochs=20, batch_size=64)
+        # Run full training loop
+        trainer.train(epochs=50, batch_size=64)
     except Exception as e:
         print(f"Test failed: {e}")

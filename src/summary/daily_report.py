@@ -30,6 +30,16 @@ class DailyReporter:
         report += f"Wins: {wins} | Losses: {losses}\n"
         report += f"Win Rate: {win_rate:.1%}\n\n"
         
+        sessions = stats.get('sessions', {})
+        if sessions:
+            report += "<b>📈 Session Breakdown</b>\n"
+            for sess_name, data in sessions.items():
+                p = data['pnl']
+                t = data['trades']
+                sym = "🟢" if p > 0 else ("🔴" if p < 0 else "⚪")
+                report += f"{sym} {sess_name}: ${p:.2f} ({t} trades)\n"
+            report += f"\n🏆 Best Session: <b>{stats.get('best_session', 'N/A')}</b>\n\n"
+        
         report += "<i>System ready for the next day.</i>"
         return report
 

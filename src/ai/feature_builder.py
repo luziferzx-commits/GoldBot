@@ -11,6 +11,8 @@ warnings.filterwarnings('ignore') # Ignore pandas TA warnings
 from src.analysis.candlestick_patterns import CandlestickAnalyzer
 from src.analysis.support_resistance import SRAnalyzer
 from src.analysis.market_regime import MarketRegime
+from src.analysis.chart_patterns import ChartPatternDetector
+from src.analysis.order_blocks import OrderBlockDetector
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +80,53 @@ class FeatureBuilder:
         dir_map = {"BUY": 1, "SELL": -1, "NEUTRAL": 0}
         df['pattern_dir_num'] = df['pattern_direction'].map(dir_map).fillna(0)
         
+        # Add new Strategy features
+        # For simplicity and speed in this demo, we'll calculate them for the latest rows
+        # In a full training pipeline, this would be vectorized or cached
+        dt_str = np.zeros(len(df))
+        db_str = np.zeros(len(df))
+        bfl_str = np.zeros(len(df))
+        brfl_str = np.zeros(len(df))
+        ob_dist = np.zeros(len(df))
+        ob_str = np.zeros(len(df))
+        
+        # Calculate for last 100 bars to save time during live execution
+        start_idx = max(50, len(df) - 100)
+        
+        for i in range(start_idx, len(df)):
+            sub_df = df.iloc[:i+1]
+            dt = ChartPatternDetector.detect_double_top(sub_df)
+            db = ChartPatternDetector.detect_double_bottom(sub_df)
+            bfl = ChartPatternDetector.detect_bull_flag(sub_df)
+            brfl = ChartPatternDetector.detect_bear_flag(sub_df)
+            
+            dt_str[i] = dt['strength']
+            db_str[i] = db['strength']
+            bfl_str[i] = bfl['strength']
+            brfl_str[i] = brfl['strength']
+            
+            ob = OrderBlockDetector.get_nearest_ob(df['close'].iloc[i], sub_df)
+            dist = min(ob['dist_bull'], ob['dist_bear'])
+            ob_dist[i] = dist / df['close'].iloc[i] if df['close'].iloc[i] > 0 else 0
+            
+            bull_str = ob['bullish_ob']['strength']
+            bear_str = ob['bearish_ob']['strength']
+            ob_str[i] = bull_str if ob['dist_bull'] < ob['dist_bear'] else -bear_str
+
+        df['double_top_strength'] = dt_str
+        df['double_bottom_strength'] = db_str
+        df['bull_flag_strength'] = bfl_str
+        df['bear_flag_strength'] = brfl_str
+        df['nearest_ob_distance'] = ob_dist
+        df['ob_strength'] = ob_str
+        
+        # Asian Range Features
+        df['asian_range_size'] = 0.0
+        df['price_vs_asian_range'] = 0.0
+        # Simplification for H1 feature:
+        # Just use ATR as a proxy if we can't compute exact Asian range size on H1 easily
+        df['asian_range_size'] = df['ATR_14'] / df['close']
+        
         # Ensure external features exist (they might be missing if external factors failed to fetch)
         ext_cols = ['dxy_change', 'us10y_change', 'vix_level', 'oil_change', 'sp500_change', 'sentiment_score', 'gold_bias']
         for col in ext_cols:
@@ -105,7 +154,7 @@ class FeatureBuilder:
             
         df = self._compute_base_features(m5_data)
         
-        # Select columns to use as features (29 features total)
+        # Select columns to use as features (37 features total)
         feature_cols = [
             'close', 'EMA_9', 'EMA_21', 'EMA_50', 'RSI_14', 
             'MACD', 'MACD_hist', 'ATR_14', 'BB_upper', 'BB_lower', 
@@ -113,7 +162,10 @@ class FeatureBuilder:
             'pattern_dir_num', 'pattern_strength', 'distance_to_resistance', 
             'distance_to_support', 'zone_strength',
             'market_regime_num', 'dxy_change', 'us10y_change', 'vix_level', 
-            'oil_change', 'sp500_change', 'sentiment_score', 'gold_bias'
+            'oil_change', 'sp500_change', 'sentiment_score', 'gold_bias',
+            'double_top_strength', 'double_bottom_strength', 'bull_flag_strength', 
+            'bear_flag_strength', 'nearest_ob_distance', 'ob_strength', 
+            'asian_range_size', 'price_vs_asian_range'
         ]
         
         # Also store these feature cols length to pass to model

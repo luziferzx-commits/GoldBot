@@ -39,20 +39,27 @@ class BacktestEngine:
         from src.analysis.external_factors import ExternalFactors
         from src.strategy.ai_strategy import AIStrategy
         from src.strategy.silver_bullet_strategy import SilverBulletStrategy
+        from src.strategy.asian_range_strategy import AsianRangeStrategy
+        from src.strategy.sge_strategy import SGEStrategy
+        from src.strategy.po3_strategy import PO3Strategy
+        from src.strategy.overlap_scalper import OverlapScalper
         
         self.external_factors = ExternalFactors()
-        self.ai_strategy = AIStrategy()
-        self.sb_strategy = SilverBulletStrategy(self.ai_strategy)
+        self.strategy = AIStrategy()
+        self.sb_strategy = SilverBulletStrategy(self.strategy)
+        self.asian_strategy = AsianRangeStrategy(self.strategy)
+        self.sge_strategy = SGEStrategy(self.strategy)
+        self.po3_strategy = PO3Strategy(self.strategy)
+        self.overlap_scalper = OverlapScalper(self.strategy)
         
         # Load Model
         model_path = Path("models/learning/model_demo.pt")
         if not model_path.exists():
             logger.warning("Learning model not found, falling back to version search...")
             # We could fallback to load_best_version() here, but for now we expect the learning model.
-            
-        self.model = None
+            model_path = Path("models/live/model_current.pt")
         if model_path.exists():
-            self.model = GoldLSTM(input_size=29)
+            self.model = GoldLSTM(input_size=37)
             try:
                 self.model.load_state_dict(torch.load(model_path))
                 logger.info(f"Loaded model from {model_path}")
@@ -132,11 +139,13 @@ class BacktestEngine:
 
         h1 = manager.get_data("H1")
         m5 = manager.get_data("M5")
+        m15 = manager.get_data("M15")
         if h1 is None or len(h1) < 100 or m5 is None:
             logger.error("Insufficient data.")
             return
             
         m5.index = pd.to_datetime(m5.index, utc=True).tz_localize(None)
+        m15.index = pd.to_datetime(m15.index, utc=True).tz_localize(None)
             
         logger.info("Pre-computing MTF indicators...")
         mn1_aligned = self.pre_compute_mn1(manager.get_data("MN1"))
@@ -245,7 +254,7 @@ class BacktestEngine:
                 logger.info(f"Completed Walk-Forward Segment {current_segment}")
                 current_segment += 1
 
-            row = h1.iloc[i]
+            row = h1.iloc[i].copy()
             timestamp = h1.index[i]
             hour = timestamp.hour
             
@@ -272,13 +281,25 @@ class BacktestEngine:
                 pnl = 0.0
                 reason = ""
                 
+                # Apply Trailing Stop if active
+                if open_trade.get('trailing_stop', False):
+                    # We re-calculate EMA 14 for live trailing logic
+                    current_ema = h1.iloc[max(0, i-14):i]['close'].mean()
+                    
+                    if open_trade['direction'] == "BUY":
+                        if current_ema > open_trade['sl']:
+                            open_trade['sl'] = current_ema
+                    else:
+                        if current_ema < open_trade['sl'] and current_ema > 0:
+                            open_trade['sl'] = current_ema
+                            
                 # Check SL/TP
                 if open_trade['direction'] == "BUY":
                     if low <= open_trade['sl']:
                         closed = True
                         pnl = (open_trade['sl'] - open_trade['entry_price']) * open_trade['lot'] * 100
                         reason = "SL"
-                    elif high >= open_trade['tp']:
+                    elif open_trade['tp'] is not None and high >= open_trade['tp']:
                         closed = True
                         pnl = (open_trade['tp'] - open_trade['entry_price']) * open_trade['lot'] * 100
                         reason = "TP"
@@ -287,7 +308,7 @@ class BacktestEngine:
                         closed = True
                         pnl = (open_trade['entry_price'] - open_trade['sl']) * open_trade['lot'] * 100
                         reason = "SL"
-                    elif low <= open_trade['tp']:
+                    elif open_trade['tp'] is not None and low <= open_trade['tp']:
                         closed = True
                         pnl = (open_trade['entry_price'] - open_trade['tp']) * open_trade['lot'] * 100
                         reason = "TP"
@@ -316,46 +337,68 @@ class BacktestEngine:
                         
             # 2. Look for new trade if flat
             if open_trade is None and self.model is not None and not stop_trading_today:
-                # 1. Skip Asian Session (trade only London + NY: 08:00 to 19:59 GMT)
-                if hour < 8 or hour > 19:
-                    continue
-                    
-                # 2. Momentum Filter: ATR > ATR_MA_20
-                d1_atr = row.get('D1_ATR', np.nan)
-                d1_atr_ma = row.get('D1_ATR_MA_20', np.nan)
-                if pd.isna(d1_atr) or pd.isna(d1_atr_ma) or d1_atr <= d1_atr_ma:
-                    continue
-                    
-                # 3. AI Prediction
-                seq = features_tensor[i - 60 + 1 : i + 1].unsqueeze(0)
-                direction, conf = self.model.predict(seq)
+                # Calculate D1 ATR
+                d1_atr = row.get('D1_ATR', 5.0)
                 
-                # Check Silver Bullet First
-                # M5 data up to current timestamp
-                m5_slice = m5[m5.index <= timestamp]
-                h1_slice = h1[h1.index <= timestamp]
-                sb_signal = self.sb_strategy.generate_signal(m5_slice, None, h1_slice, d1_aligned, mn1_aligned)
+                # Windows
+                m5_window = m5[m5.index <= timestamp]
+                m15_window = m15[m15.index <= timestamp]
+                h1_window = h1[h1.index <= timestamp]
                 
-                if sb_signal.direction in ["BUY", "SELL"]:
-                    direction = sb_signal.direction
-                    conf = sb_signal.confidence
-                    lot_multiplier = 1.0 # Standard lot for SB
-                    logger.info(f"[{i}] Silver Bullet Signal: {direction} | Conf: {conf:.2f}")
-                else:
-                    # 4. Filter AI Signal
+                if len(m5_window) < 50:
+                    continue
+                
+                # Signal Routing
+                from src.strategy.base import Signal
+                signal = Signal("HOLD", 0.0)
+                
+                # Ensure PO3 records manipulation phase continuously
+                self.po3_strategy.generate_signal(m5_window, m15_window, h1_window, None, None)
+                
+                gmt7_time = timestamp + pd.Timedelta(hours=7)
+                current_hour_gmt7 = gmt7_time.hour
+                
+                if 8 <= current_hour_gmt7 < 10:
+                    signal = self.sge_strategy.generate_signal(m5_window, m15_window, h1_window, None, None)
+                elif 15 <= current_hour_gmt7 < 16:
+                    signal = self.asian_strategy.generate_signal(m5_window, m15_window, h1_window, None, None)
+                elif 19 <= current_hour_gmt7 < 23:
+                    signal = self.overlap_scalper.generate_signal(m5_window, m15_window, h1_window, None, None)
+                    
+                if signal.direction == "HOLD":
+                    signal = self.sb_strategy.generate_signal(m5_window, m15_window, h1_window, None, None)
+                    
+                if signal.direction == "HOLD":
+                    signal = self.po3_strategy.generate_signal(m5_window, m15_window, h1_window, None, None)
+                    
+                if signal.direction == "HOLD":
+                    # Fallback to AI
+                    ai_direction, ai_conf = self.strategy.get_raw_prediction(h1_window)
                     h1_trend = row.get('H1_trend', "SIDEWAYS")
                     h1_trend_str = "BUY" if h1_trend == "UP" else ("SELL" if h1_trend == "DOWN" else "SIDEWAYS")
-                    
-                    # Refine confidence using day trade strategy
-                    conf, lot_multiplier = self.day_strategy.refine_confidence(row, hour, direction, conf)
-                    
-                    if i < 1000 and (i % 100 == 0):
-                        logger.info(f"[{i}] Dir: {direction} | Conf: {conf:.2f} | H1 Trend: {h1_trend_str} | ATR: {d1_atr:.2f} | ATR_MA: {row.get('D1_ATR_MA_20', 0):.2f}")
+                    if ai_conf >= self.conf_threshold and ai_direction == h1_trend_str:
+                        signal = Signal(ai_direction, ai_conf, reason="AI Day Trade Fallback")
                 
+                direction = None
+                conf = 0.0
+                reason = ""
+                trailing_stop = False
+                lot_multiplier = 1.0
                 
-                if conf >= 0.0 and direction in ["BUY", "SELL"]:
+                if signal.direction != "HOLD":
+                    direction = signal.direction
+                    conf = signal.confidence
+                    reason = signal.reason
+                    trailing_stop = signal.trailing_stop
+                    
+                    if "AI Day Trade" in reason or "Silver" in reason:
+                        # Refine confidence using day trade strategy
+                        conf, lot_multiplier = self.day_strategy.refine_confidence(row, hour, direction, conf)
+                        
+                if direction in ["BUY", "SELL"] and conf >= self.conf_threshold:
                     # Check H1 trend only if not Silver Bullet (Silver Bullet handles its own checks)
-                    if sb_signal.direction in ["BUY", "SELL"] or direction == row.get('H1_trend_str', direction) or row.get('H1_trend_str', 'SIDEWAYS') == "SIDEWAYS":
+                    # We also skip strict trend checks for PO3 and Asian Range as they are independent
+                    if "Silver" in reason or "Asian" in reason or "PO3" in reason or "Overlap" in reason or "SGE" in reason or direction == h1_trend_str or h1_trend_str == "SIDEWAYS":
                         current_price = row['close']
                         
                         # Adjust risk if weekly PnL > 3%
@@ -383,10 +426,11 @@ class BacktestEngine:
                                 'direction': direction,
                                 'entry_price': current_price,
                                 'sl': sl,
-                                'tp': tp,
+                                'tp': tp if not trailing_stop else None,
                                 'lot': lot,
                                 'conf': conf,
-                                'segment': current_segment
+                                'segment': current_segment,
+                                'trailing_stop': trailing_stop
                             }
             
             # Update Equity curve

@@ -42,8 +42,8 @@ class AIStrategy(BaseStrategy):
         
         if model_path.exists():
             try:
-                # FeatureBuilder currently outputs 29 features
-                self.model = GoldLSTM(input_size=29)
+                # FeatureBuilder currently outputs 37 features
+                self.model = GoldLSTM(input_size=37)
                 self.model.load_state_dict(torch.load(model_path))
                 self.model.eval()
                 logger.info(f"Loaded AI model from {model_path}")
@@ -98,11 +98,18 @@ class AIStrategy(BaseStrategy):
             if not m15_confirmed or m15_strength <= 0.5:
                 return Signal("HOLD", 0.0, reason="Conditions not met")
                 
+            # EMA Trailing Stop Logic (if TRENDING)
+            # We use H1 trend as proxy for market regime
+            trailing_stop = False
+            if h1_trend in ["UP", "DOWN"]:
+                trailing_stop = True
+
             return Signal(
                 direction=ai_direction,
                 confidence=ai_conf,
                 entry_price=current_price,
-                reason="AI Generated Signal"
+                trailing_stop=trailing_stop,
+                reason=f"AI Signal ({h1_trend} trend, Trailing SL: {trailing_stop})"
             )
         else:
             logger.info("AI confidence too low or no model. Using Fallback Strategy.")

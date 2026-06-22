@@ -136,12 +136,42 @@ class Database:
             losses = sum([1 for t in trades if t.pnl and t.pnl <= 0])
             count = len(trades)
             win_rate = wins / count if count > 0 else 0.0
+            
+            # Session breakdown
+            sessions = {
+                "Asian": {"pnl": 0.0, "trades": 0},
+                "London": {"pnl": 0.0, "trades": 0},
+                "NY": {"pnl": 0.0, "trades": 0}
+            }
+            
+            for t in trades:
+                if t.pnl is None: continue
+                
+                # Convert to GMT+7
+                import pandas as pd
+                gmt7_time = t.timestamp + pd.Timedelta(hours=7)
+                h = gmt7_time.hour
+                
+                if 2 <= h < 15:
+                    sess = "Asian"
+                elif 15 <= h < 20:
+                    sess = "London"
+                else:
+                    sess = "NY"
+                    
+                sessions[sess]['pnl'] += t.pnl
+                sessions[sess]['trades'] += 1
+                
+            best_session = max(sessions.items(), key=lambda x: x[1]['pnl'])[0] if count > 0 else "N/A"
+            
             return {
                 "pnl": total_pnl,
                 "trades": count,
                 "wins": wins,
                 "losses": losses,
-                "win_rate": win_rate
+                "win_rate": win_rate,
+                "sessions": sessions,
+                "best_session": best_session
             }
         finally:
             session.close()

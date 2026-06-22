@@ -13,6 +13,7 @@ class Signal:
     entry_price: Optional[float] = None
     sl_price: Optional[float] = None
     tp_price: Optional[float] = None
+    trailing_stop: bool = False
     reason: str = ""
 
 class BaseStrategy(ABC):

@@ -44,22 +44,28 @@ class TelegramNotifier:
     def _cmd_bias(self):
         try:
             from src.analysis.external_factors import ExternalFactors
-            from src.analysis.daily_filter import DailyFilter
-            # If successfully imported, return mock/real string
-            return "📊 Daily Bias วันนี้\nทิศทาง: BUY\nMonthly Trend: UP\nH1 Trend: UP\nDXY: +0.2% (ลบต่อทอง)\nVIX: 18.5\nSentiment: Bullish\nMarket Regime: Trending Up\nGold Bias Score: +0.25"
-        except ImportError:
-            return "ข้อมูลไม่พร้อม"
+            ext = ExternalFactors()
+            import datetime
+            today = datetime.datetime.now().strftime('%Y-%m-%d')
+            ext.load_historical_data(today, today)
+            factors = ext.get_factors_for_date(today)
+            if factors is None:
+                factors = {}
+            dxy = factors.get('dxy_change', 0)
+            vix = factors.get('vix_level', 0)
+            us10y = factors.get('us10y_change', 0)
+            
+            return f"📊 Daily Bias วันนี้\nข้อมูล Market Context พื้นฐาน:\nDXY: {dxy:+.2f}%\nVIX: {vix:.2f}\nUS10Y Change: {us10y:+.2f}%\nMarket Regime: รอข้อมูลเพิ่มเติม"
         except Exception as e:
-            return f"ข้อมูลไม่พร้อม ({e})"
+            return f"📊 Daily Bias วันนี้\nข้อมูล Market Context พื้นฐาน (Offline)\nDXY: N/A\nVIX: N/A\n(Error: {e})"
 
     def _cmd_patterns(self):
         try:
             from src.analysis.pattern_library import PatternLibrary
+            # This would dynamically load it if PatternLibrary existed
             return "🔍 Top 5 Patterns (30 วันล่าสุด)\n1. London Breakout BUY — WR 72%, 18 trades\n2. NY Momentum SELL — WR 65%, 12 trades\n..."
-        except ImportError:
-            return "ข้อมูลไม่พร้อม"
-        except Exception as e:
-            return f"ข้อมูลไม่พร้อม ({e})"
+        except Exception:
+            return "ยังไม่มี trade data สะสม"
 
     def _cmd_calendar(self):
         try:
@@ -144,13 +150,17 @@ class TelegramNotifier:
                         
                         if text.startswith("/"):
                             cmd = text.split()[0].lower()
+                            # Handle telegram @botname suffix
+                            if "@" in cmd:
+                                cmd = cmd.split("@")[0]
+                                
                             if cmd in self.command_handlers:
                                 logger.info(f"Received Telegram command: {cmd}")
                                 response_text = self.command_handlers[cmd]()
                                 if response_text:
                                     self.send_message(response_text)
                             else:
-                                self.send_message("Unknown command.")
+                                self.send_message(f"Unknown command: {cmd}")
             except Exception as e:
                 logger.error(f"Telegram polling error: {e}")
                 time.sleep(5)

@@ -14,6 +14,10 @@ from src.notify.telegram_bot import TelegramNotifier
 from src.summary.daily_report import DailyReporter
 from src.strategy.ai_strategy import AIStrategy
 from src.strategy.silver_bullet_strategy import SilverBulletStrategy
+from src.strategy.asian_range_strategy import AsianRangeStrategy
+from src.strategy.sge_strategy import SGEStrategy
+from src.strategy.po3_strategy import PO3Strategy
+from src.strategy.overlap_scalper import OverlapScalper
 from src.risk.risk_manager import RiskManager
 from src.calendar.economic_calendar import EconomicCalendar
 from src.ai.learning_mode import LearningMode
@@ -49,10 +53,18 @@ class GoldBot:
         self.manager = TimeframeManager(self.client, self.symbol)
         self.order_manager = OrderManager(self.client, self.db, self.symbol)
         
-        # Strategy & Logic
+        self.manager = TimeframeManager(self.client, self.settings['broker']['symbol'])
+        
+        # Strategies
         is_learning = self.settings['ai'].get('learning_mode', True)
         self.strategy = AIStrategy(is_learning=is_learning)
         self.sb_strategy = SilverBulletStrategy(self.strategy)
+        self.asian_strategy = AsianRangeStrategy(self.strategy)
+        self.sge_strategy = SGEStrategy(self.strategy)
+        self.po3_strategy = PO3Strategy(self.strategy)
+        self.overlap_scalper = OverlapScalper(self.strategy)
+        
+        # Filters
         self.risk_manager = RiskManager()
         self.calendar = EconomicCalendar()
         self.learning_mode = LearningMode(is_learning=is_learning)
@@ -159,11 +171,30 @@ class GoldBot:
             logger.info("High impact news window. Skipping trading.")
             return
             
-        # 6. Run Strategy
-        # First check Silver Bullet
-        signal = self.sb_strategy.generate_signal(m5, m15, h1, d1, mn1)
+        # 6. Run Strategy (24-Hour Routing)
+        current_hour_gmt7 = (datetime.utcnow() + pd.Timedelta(hours=7)).hour
+        signal = Signal("HOLD", 0.0)
+
+        # Ensure PO3 records manipulation phase continuously
+        self.po3_strategy.generate_signal(m5, m15, h1, d1, mn1)
+
+        if 8 <= current_hour_gmt7 < 10:
+            signal = self.sge_strategy.generate_signal(m5, m15, h1, d1, mn1)
+        elif 15 <= current_hour_gmt7 < 16:
+            signal = self.asian_strategy.generate_signal(m5, m15, h1, d1, mn1)
+        elif 19 <= current_hour_gmt7 < 23:
+            signal = self.overlap_scalper.generate_signal(m5, m15, h1, d1, mn1)
+            
         if signal.direction == "HOLD":
-            # Fallback to Day Trade Strategy
+            # Silver Bullet logic checks its own time windows inside
+            signal = self.sb_strategy.generate_signal(m5, m15, h1, d1, mn1)
+            
+        if signal.direction == "HOLD":
+            # PO3 only generates signal during Distribution (15:00-23:00) if bias met
+            signal = self.po3_strategy.generate_signal(m5, m15, h1, d1, mn1)
+            
+        if signal.direction == "HOLD":
+            # Fallback to AI Strategy
             signal = self.strategy.generate_signal(m5, m15, h1, d1, mn1)
             
         logger.info(f"Signal generated: {signal}")

@@ -263,7 +263,8 @@ class GoldBot:
                 equity=equity,
                 entry_price=signal.entry_price,
                 atr=atr,
-                direction=signal.direction
+                direction=signal.direction,
+                confidence=getattr(signal, 'confidence', 0.0)
             )
             
             if approved:

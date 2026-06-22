@@ -60,7 +60,7 @@ class RiskManager:
         else:
             self.daily_loss_pct = 0.0
 
-    def evaluate(self, equity: float, entry_price: float, atr: float, direction: str) -> Tuple[bool, float, float, float, str]:
+    def evaluate(self, equity: float, entry_price: float, atr: float, direction: str, confidence: float = 0.0) -> Tuple[bool, float, float, float, str]:
         """
         Evaluate if trade is allowed and compute lot, sl, tp.
         
@@ -69,6 +69,7 @@ class RiskManager:
             entry_price: The expected entry price
             atr: The Average True Range for SL/TP calculation
             direction: "BUY" or "SELL"
+            confidence: AI Prediction confidence (0.0 to 1.0)
             
         Returns:
             Tuple[bool, float, float, float, str]: (approved, lot, sl, tp, reason)
@@ -102,11 +103,19 @@ class RiskManager:
             sl_price = entry_price + sl_dist
             tp_price = entry_price - tp_dist
             
+        # Compute Dynamic Risk Multiplier
+        multiplier = 1.0
+        if confidence >= 0.85:
+            multiplier = 2.0  # A+ Setup (capped at 2.0x for safety)
+        elif confidence >= 0.70:
+            multiplier = 1.0  # A Setup
+        elif confidence > 0.0:
+            multiplier = 0.5  # B/C Setup
+            
         # Compute Lot Size
-        # Risk amount = equity * risk_per_trade
+        # Risk amount = equity * risk_per_trade * multiplier
         # Lot size depends on contract specification. For XAUUSD, 1 lot = 100 oz.
-        # This is a simplified calculation assuming standard contract size.
-        risk_amount = equity * self.risk_per_trade
+        risk_amount = equity * self.risk_per_trade * multiplier
         tick_value = 1.0 # Approximate for XAUUSD (1 lot moves $1 = $100 profit/loss)
         # Assuming SL distance in points or absolute price. If price moves by sl_dist, how much per lot?
         # Standard XAUUSD: 1 point (0.01) move on 1 lot = $1

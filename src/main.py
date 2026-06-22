@@ -220,6 +220,9 @@ class GoldBot:
         atr = h1['D1_ATR'].iloc[-1] if 'D1_ATR' in h1.columns else 5.0
         h1_trend = h1['H1_trend'].iloc[-1] if 'H1_trend' in h1.columns else "SIDEWAYS"
         
+        # Priority #2: Manage Open Positions (Breakeven & Trailing Stop)
+        self.order_manager.manage_open_positions(atr)
+        
         from src.analysis.market_regime import MarketRegime
         regime_analyzer = MarketRegime()
         m5 = regime_analyzer.analyze(m5)

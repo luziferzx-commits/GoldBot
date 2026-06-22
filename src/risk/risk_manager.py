@@ -25,7 +25,7 @@ class RiskManager:
             self.max_trades_per_day = settings['trading']['max_trades_per_day']
         except Exception as e:
             logger.error(f"Failed to load risk config, using defaults: {e}")
-            self.risk_per_trade = 0.01
+            self.risk_per_trade = 0.005
             self.max_daily_loss = 0.03
             self.max_drawdown = 0.15
             self.sl_atr_multiplier = 2.0
@@ -38,6 +38,27 @@ class RiskManager:
         self.drawdown_pct = 0.0
         self.consecutive_losses = 0
         self.trades_today = 0
+
+    def update_daily_stats(self):
+        """Fetch today's closed trades from MT5 to calculate real daily loss."""
+        import MetaTrader5 as mt5
+        from datetime import datetime, time
+        
+        today_start = datetime.combine(datetime.today(), time.min)
+        now = datetime.now()
+        
+        deals = mt5.history_deals_get(today_start, now)
+        if deals:
+            # Sum up closed profit/loss today
+            daily_pnl = sum(deal.profit for deal in deals)
+            
+            account_info = mt5.account_info()
+            if account_info:
+                start_equity = account_info.balance - daily_pnl
+                if start_equity > 0:
+                    self.daily_loss_pct = -daily_pnl / start_equity if daily_pnl < 0 else 0.0
+        else:
+            self.daily_loss_pct = 0.0
 
     def evaluate(self, equity: float, entry_price: float, atr: float, direction: str) -> Tuple[bool, float, float, float, str]:
         """
@@ -52,6 +73,9 @@ class RiskManager:
         Returns:
             Tuple[bool, float, float, float, str]: (approved, lot, sl, tp, reason)
         """
+        # Update stats from MT5
+        self.update_daily_stats()
+        
         # Hard limits check
         if self.daily_loss_pct >= self.max_daily_loss:
             return False, 0.0, 0.0, 0.0, "Max daily loss reached"

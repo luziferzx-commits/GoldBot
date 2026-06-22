@@ -17,6 +17,14 @@ class OrderManager:
         self.client = client
         self.db = db
         self.symbol = symbol
+        
+        import yaml
+        try:
+            with open("config/settings.yaml", "r") as f:
+                settings = yaml.safe_load(f)
+            self.max_spread = settings.get('risk', {}).get('max_spread', 50)
+        except:
+            self.max_spread = 50
 
     def _has_open_positions(self) -> bool:
         """Check idempotency (only 1 open position per symbol)."""
@@ -36,6 +44,15 @@ class OrderManager:
             
         direction = signal.direction
         order_type = mt5.ORDER_TYPE_BUY if direction == "BUY" else mt5.ORDER_TYPE_SELL
+        
+        # Priority #4: Spread Filter
+        tick = mt5.symbol_info_tick(self.symbol)
+        symbol_info = mt5.symbol_info(self.symbol)
+        if tick and symbol_info:
+            spread_points = (tick.ask - tick.bid) / symbol_info.point
+            if spread_points > self.max_spread:
+                logger.warning(f"Spread {spread_points:.1f} exceeds max {self.max_spread}. Skipping trade.")
+                return None
         
         request = {
             "action": mt5.TRADE_ACTION_DEAL,
@@ -141,6 +158,54 @@ class OrderManager:
             logger.info(f"Modified SL/TP for {ticket}")
             return True
         return False
+
+    def manage_open_positions(self, atr: float):
+        """
+        Dynamic Breakeven & Trailing Stop logic.
+        BE = 1.2 ATR, Trail Activate = 2.0 ATR, Trail Step = 1.0 ATR
+        """
+        if atr <= 0: return
+        
+        positions = mt5.positions_get(symbol=self.symbol)
+        if not positions: return
+        
+        be_dist = 1.2 * atr
+        trail_act = 2.0 * atr
+        trail_dist = 1.0 * atr
+        
+        for pos in positions:
+            tick = mt5.symbol_info_tick(self.symbol)
+            if not tick: continue
+            
+            if pos.type == mt5.ORDER_TYPE_BUY:
+                current_profit_dist = tick.bid - pos.price_open
+                
+                # 1. Breakeven
+                if current_profit_dist >= be_dist and (pos.sl < pos.price_open or pos.sl == 0.0):
+                    self.modify_sl_tp(pos.ticket, pos.price_open, pos.tp)
+                    logger.info(f"Move BE: Ticket {pos.ticket} SL -> {pos.price_open}")
+                
+                # 2. Trailing Stop
+                elif current_profit_dist >= trail_act:
+                    new_sl = tick.bid - trail_dist
+                    if pos.sl == 0.0 or new_sl > pos.sl:
+                        self.modify_sl_tp(pos.ticket, new_sl, pos.tp)
+                        logger.info(f"Trailing: Ticket {pos.ticket} SL -> {new_sl:.2f}")
+                        
+            elif pos.type == mt5.ORDER_TYPE_SELL:
+                current_profit_dist = pos.price_open - tick.ask
+                
+                # 1. Breakeven
+                if current_profit_dist >= be_dist and (pos.sl > pos.price_open or pos.sl == 0.0):
+                    self.modify_sl_tp(pos.ticket, pos.price_open, pos.tp)
+                    logger.info(f"Move BE: Ticket {pos.ticket} SL -> {pos.price_open}")
+                
+                # 2. Trailing Stop
+                elif current_profit_dist >= trail_act:
+                    new_sl = tick.ask + trail_dist
+                    if pos.sl == 0.0 or new_sl < pos.sl:
+                        self.modify_sl_tp(pos.ticket, new_sl, pos.tp)
+                        logger.info(f"Trailing: Ticket {pos.ticket} SL -> {new_sl:.2f}")
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)

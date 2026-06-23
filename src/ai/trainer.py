@@ -29,43 +29,74 @@ class ModelTrainer:
         self.builder = FeatureBuilder(seq_len=seq_len)
         self.external_factors = ExternalFactors()
 
-    def create_smart_labels(self, df: pd.DataFrame, forward_bars: int = 20) -> torch.Tensor:
+    def create_smart_labels(self, df: pd.DataFrame, h1_data: pd.DataFrame) -> torch.Tensor:
         """
-        Create labels based on expected Risk:Reward instead of simple direction.
-        BUY (0), SELL (1), HOLD (2). Note: original code used BUY(0), SELL(1). The prompt used BUY(2), SELL(0), HOLD(1). 
-        To be consistent with model's 3 classes: 0=BUY, 1=SELL, 2=HOLD, we will use:
-        BUY = 0, SELL = 1, HOLD = 2.
+        Creates smart classification labels for the dataset using strict path simulation.
         """
         import pandas_ta_classic as ta
-        if 'ATR_14' not in df.columns:
-            df['ATR_14'] = ta.atr(df['high'], df['low'], df['close'], length=14).bfill().fillna(5.0)
+        forward_bars = 48
+        
+        # Merge H1 ATR into M5
+        if h1_data is not None and not h1_data.empty:
+            h1 = h1_data.copy()
+            if 'ATR_14' not in h1.columns:
+                h1['ATR_14'] = ta.atr(h1['high'], h1['low'], h1['close'], length=14)
+            h1 = h1[['ATR_14']].dropna()
             
-        labels = []
-        # Calculate for all rows
-        for i in range(len(df)):
-            if i >= len(df) - forward_bars:
-                labels.append(2) # HOLD if not enough future
-                continue
-                
-            future = df.iloc[i+1:i+forward_bars+1]
-            current_atr = df['ATR_14'].iloc[i]
-            if current_atr <= 0: current_atr = 1.0 # fallback
+            df_temp = df.copy()
+            df_temp.index = pd.to_datetime(df_temp.index, utc=True).tz_localize(None)
+            h1.index = pd.to_datetime(h1.index, utc=True).tz_localize(None)
             
-            max_up = future['high'].max() - df['close'].iloc[i]
-            max_down = df['close'].iloc[i] - future['low'].min()
+            df_merged = pd.merge_asof(df_temp, h1, left_index=True, right_index=True, direction='backward')
+            h1_atr_series = df_merged['ATR_14'].fillna(5.0)
+        else:
+            h1_atr_series = pd.Series(5.0, index=df.index)
             
-            # BUY if price can go up > 1.5 ATR before going down 1 ATR
-            # Approximation: if max_up > 1.5 ATR and max_up > max_down * 1.5
-            if max_up > current_atr * 1.5 and max_up > max_down * 1.5:
-                labels.append(0) # BUY
-            # SELL if price goes down > 1.5 ATR before going up 1 ATR
-            elif max_down > current_atr * 1.5 and max_down > max_up * 1.5:
-                labels.append(1) # SELL
-            else:
-                labels.append(2) # HOLD
-                
-        # Slice the labels to match the sequence outputs
+        closes = df['close'].values
+        highs = df['high'].values
+        lows = df['low'].values
+        atrs = h1_atr_series.values
+        
+        n = len(df)
+        tp_mult = 1.5
+        sl_mult = tp_mult / 2.0
+        
+        labels = np.full(n, 2, dtype=int)
+        for i in range(n - forward_bars):
+            entry = closes[i]
+            atr = atrs[i]
+            if atr <= 0: atr = 5.0
+            
+            t_up = entry + atr * tp_mult
+            s_down = entry - atr * sl_mult
+            
+            t_down = entry - atr * tp_mult
+            s_up = entry + atr * sl_mult
+            
+            # BUY Path
+            for j in range(1, forward_bars + 1):
+                if lows[i+j] <= s_down:
+                    break # SL hit
+                if highs[i+j] >= t_up:
+                    labels[i] = 0 # TP hit
+                    break
+            
+            # SELL Path (only if BUY didn't hit)
+            if labels[i] == 2:
+                for j in range(1, forward_bars + 1):
+                    if highs[i+j] >= s_up:
+                        break # SL hit
+                    if lows[i+j] <= t_down:
+                        labels[i] = 1 # TP hit
+                        break
+                        
         seq_labels = labels[self.seq_len - 1:]
+        hold_pct = np.mean(seq_labels == 2) * 100
+        buy_pct = np.mean(seq_labels == 0) * 100
+        sell_pct = np.mean(seq_labels == 1) * 100
+        
+        logger.info(f"Target Dist [TP={tp_mult:.1f} ATR, Fwd={forward_bars}]: BUY {buy_pct:.1f}%, SELL {sell_pct:.1f}%, HOLD {hold_pct:.1f}%")
+        
         return torch.tensor(seq_labels, dtype=torch.long)
 
     def train(self, epochs: int = 50, batch_size: int = 32):
@@ -121,7 +152,7 @@ class ModelTrainer:
         if X is None:
             return False
             
-        y = self.create_smart_labels(m5_data)
+        y = self.create_smart_labels(m5_data, h1_data)
         
         # Ensure lengths match
         min_len = min(len(X), len(y))
@@ -173,13 +204,12 @@ class ModelTrainer:
         class_counts = torch.bincount(y_train_np, minlength=3).float()
         # Add small epsilon to prevent division by zero
         class_counts[class_counts == 0] = 1.0
-        weights = 1.0 / class_counts
-        weights = (weights / weights.sum() * 3.0).to(device) # normalize and move to device
+        total = float(len(y_train_np))
+        weights = (total / (3.0 * class_counts)).to(device)
         
         optimizer = optim.AdamW(model.parameters(), lr=0.0005, weight_decay=1e-4)
         scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=50)
-        weights = torch.tensor([1.0, 1.5, 1.5], dtype=torch.float32).to(device)
-        criterion = AsymmetricLoss(ce_weights=weights)
+        criterion = AsymmetricFocalLoss(ce_weights=weights)
         
         patience = 15
         patience_counter = 0

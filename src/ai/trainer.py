@@ -84,10 +84,12 @@ class ModelTrainer:
             self.manager.save_to_csv()
             
         m5_data = self.manager.get_data("M5")
+        h1_data = self.manager.get_data("H1")
+        d1_data = self.manager.get_data("D1")
+        
         if m5_data is None or len(m5_data) < 1000:
             logger.error("Not enough M5 data.")
             return False
-            
         # Fetch external data
         start_date = m5_data.index.min().strftime('%Y-%m-%d')
         end_date = m5_data.index.max().strftime('%Y-%m-%d')
@@ -97,6 +99,11 @@ class ModelTrainer:
             ext_df = self.external_factors.hist_data.copy()
             ext_df.index = pd.to_datetime(ext_df.index, utc=True).tz_localize(None)
             m5_data.index = pd.to_datetime(m5_data.index, utc=True).tz_localize(None) # Ensure datetime index
+            if h1_data is not None:
+                h1_data.index = pd.to_datetime(h1_data.index, utc=True).tz_localize(None)
+            if d1_data is not None:
+                d1_data.index = pd.to_datetime(d1_data.index, utc=True).tz_localize(None)
+                
             m5_data['date_only'] = m5_data.index.normalize()
             m5_data = m5_data.merge(ext_df, left_on='date_only', right_index=True, how='left')
             m5_data.drop(columns=['date_only'], inplace=True)
@@ -110,7 +117,7 @@ class ModelTrainer:
                 if col == 'vix_level': m5_data[col] = 15.0
             
         # Build features
-        X = self.builder.build_features(m5_data, fit_scaler=True)
+        X = self.builder.build_features(m5_data, h1_data=h1_data, daily_data=d1_data, fit_scaler=True)
         if X is None:
             return False
             
@@ -138,9 +145,15 @@ class ModelTrainer:
             xgb_model = XGBoostModel()
             # XGBoost needs numpy arrays, not torch tensors
             ns, seq_len, nf = X_train_np.shape
-            X_train_xgb = X_train_np.numpy().reshape(ns, seq_len * nf)
-            X_val_xgb = X_val_np.numpy().reshape(X_val_np.shape[0], seq_len * nf)
-            xgb_model.train(X_train_xgb, y_train_np.numpy(), X_val_xgb, y_val_np.numpy())
+            
+            x_train_cpu = X_train_np.cpu().numpy() if hasattr(X_train_np, 'cpu') else X_train_np.numpy()
+            y_train_cpu = y_train_np.cpu().numpy() if hasattr(y_train_np, 'cpu') else y_train_np.numpy()
+            x_val_cpu = X_val_np.cpu().numpy() if hasattr(X_val_np, 'cpu') else X_val_np.numpy()
+            y_val_cpu = y_val_np.cpu().numpy() if hasattr(y_val_np, 'cpu') else y_val_np.numpy()
+            
+            X_train_xgb = x_train_cpu.reshape(ns, seq_len * nf)
+            X_val_xgb = x_val_cpu.reshape(X_val_np.shape[0], seq_len * nf)
+            xgb_model.train(X_train_xgb, y_train_cpu, X_val_xgb, y_val_cpu)
         except Exception as e:
             logger.error(f"XGBoost training failed: {e}")
             

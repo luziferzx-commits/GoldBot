@@ -12,6 +12,7 @@ from src.filters.monthly_filter import MonthlyFilter
 from src.filters.daily_filter import DailyFilter
 from src.filters.h1_filter import H1Filter
 from src.filters.m15_filter import M15Filter
+from src.filters.news_filter import NewsFilter
 from src.ai.xgboost_model import XGBoostModel
 
 logger = logging.getLogger(__name__)
@@ -26,6 +27,7 @@ class AIStrategy(BaseStrategy):
         self.daily_filter = DailyFilter()
         self.h1_filter = H1Filter()
         self.m15_filter = M15Filter()
+        self.news_filter = NewsFilter()
         
         self.fallback_strategy = TrendFollowStrategy()
         self.feature_builder = FeatureBuilder(seq_len=60)
@@ -43,8 +45,8 @@ class AIStrategy(BaseStrategy):
         
         if model_path.exists():
             try:
-                # FeatureBuilder currently outputs 42 features
-                self.model = GoldLSTM(input_size=42)
+                # FeatureBuilder currently outputs 48 features
+                self.model = GoldLSTM(input_size=48)
                 self.model.load_state_dict(torch.load(model_path))
                 self.model.eval()
                 logger.info(f"Loaded AI model from {model_path}")
@@ -68,6 +70,10 @@ class AIStrategy(BaseStrategy):
         # Base filter checks (shared logic)
         current_price = m5_data.iloc[-1]['close'] if m5_data is not None else 0.0
         
+        blocked, reason = self.news_filter.is_news_window()
+        if blocked:
+            return Signal("HOLD", 0.0, reason=reason)
+            
         # Dynamic Thresholding using H1 ATR
         dynamic_threshold = self.conf_threshold
         if h1_data is not None and len(h1_data) >= 14:

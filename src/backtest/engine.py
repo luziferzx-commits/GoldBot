@@ -74,7 +74,7 @@ class BacktestEngine:
             # We could fallback to load_best_version() here, but for now we expect the learning model.
             model_path = Path("models/live/model_current.pt")
         if model_path.exists():
-            self.model = GoldLSTM(input_size=42) # Updated for 5 new historical features
+            self.model = GoldLSTM(input_size=48) # Updated for 48 features
             try:
                 self.model.load_state_dict(torch.load(model_path))
                 logger.info(f"Loaded model from {model_path}")
@@ -83,7 +83,7 @@ class BacktestEngine:
             self.model.eval()
             self.model.eval()
         else:
-            self.model = GoldLSTM(input_size=42)
+            self.model = GoldLSTM(input_size=48)
             logger.warning("No model found for backtest! Backtest will use uninitialized model.")
             
         self.online_learner = OnlineLearner(self.model)
@@ -262,7 +262,7 @@ class BacktestEngine:
         
         logger.info("Starting M5 walk-forward loop...")
         
-        main_data = m5
+        main_data = m5.tail(5000)
         
         # Walk-forward 5 segments
         total_bars = len(main_data)
@@ -323,19 +323,39 @@ class BacktestEngine:
                         closed = True
                         pnl = (open_trade['sl'] - open_trade['entry_price']) * open_trade['lot'] * 100
                         reason = "SL"
-                    elif open_trade['tp'] is not None and high >= open_trade['tp']:
+                    elif open_trade.get('tp1_hit') is False and open_trade.get('tp1') is not None and high >= open_trade['tp1']:
+                        # Partial TP
+                        open_trade['tp1_hit'] = True
+                        partial_pnl = (open_trade['tp1'] - open_trade['entry_price']) * (open_trade['lot'] * self.risk_manager.partial_tp_ratio) * 100
+                        balance += partial_pnl
+                        equity += partial_pnl
+                        # Move SL to breakeven
+                        open_trade['sl'] = self.risk_manager.get_breakeven_price(open_trade['entry_price'], "BUY", spread_pips=2.0)
+                        open_trade['lot'] = open_trade['lot'] * (1.0 - self.risk_manager.partial_tp_ratio)
+                        logger.info(f"Partial TP1 Hit! Locked in {partial_pnl:.2f}. SL moved to BE.")
+                    elif open_trade.get('tp2') is not None and high >= open_trade['tp2']:
                         closed = True
-                        pnl = (open_trade['tp'] - open_trade['entry_price']) * open_trade['lot'] * 100
-                        reason = "TP"
+                        pnl = (open_trade['tp2'] - open_trade['entry_price']) * open_trade['lot'] * 100
+                        reason = "TP2"
                 else: # SELL
                     if high >= open_trade['sl']:
                         closed = True
                         pnl = (open_trade['entry_price'] - open_trade['sl']) * open_trade['lot'] * 100
                         reason = "SL"
-                    elif open_trade['tp'] is not None and low <= open_trade['tp']:
+                    elif open_trade.get('tp1_hit') is False and open_trade.get('tp1') is not None and low <= open_trade['tp1']:
+                        # Partial TP
+                        open_trade['tp1_hit'] = True
+                        partial_pnl = (open_trade['entry_price'] - open_trade['tp1']) * (open_trade['lot'] * self.risk_manager.partial_tp_ratio) * 100
+                        balance += partial_pnl
+                        equity += partial_pnl
+                        # Move SL to breakeven
+                        open_trade['sl'] = self.risk_manager.get_breakeven_price(open_trade['entry_price'], "SELL", spread_pips=2.0)
+                        open_trade['lot'] = open_trade['lot'] * (1.0 - self.risk_manager.partial_tp_ratio)
+                        logger.info(f"Partial TP1 Hit! Locked in {partial_pnl:.2f}. SL moved to BE.")
+                    elif open_trade.get('tp2') is not None and low <= open_trade['tp2']:
                         closed = True
-                        pnl = (open_trade['entry_price'] - open_trade['tp']) * open_trade['lot'] * 100
-                        reason = "TP"
+                        pnl = (open_trade['entry_price'] - open_trade['tp2']) * open_trade['lot'] * 100
+                        reason = "TP2"
                         
                 if closed:
                     # Apply spread cost
@@ -372,8 +392,10 @@ class BacktestEngine:
                 m5_window = m5[m5.index <= timestamp].tail(500)
                 m15_window = m15[m15.index <= timestamp].tail(500)
                 h1_window = h1[h1.index <= timestamp].tail(24)
-                daily_window = d1_raw[d1_raw.index <= timestamp.date()].tail(5)
-                monthly_window = mn1_aligned[mn1_aligned.index <= timestamp.date()].tail(2)
+                # Use pd.to_datetime to avoid dtype mismatch
+                ts_date = pd.to_datetime(timestamp.date())
+                daily_window = d1_raw[d1_raw.index <= ts_date].tail(5)
+                monthly_window = mn1_aligned[mn1_aligned.index <= ts_date].tail(2)
                 
                 if len(m5_window) < 50:
                     continue
@@ -458,7 +480,7 @@ class BacktestEngine:
                         else:
                             self.risk_manager.risk_per_trade = default_risk
                             
-                        approved, lot, sl, tp, _ = self.risk_manager.evaluate(equity, current_price, d1_atr, direction)
+                        approved, lot, sl, tp1, tp2, _ = self.risk_manager.evaluate(equity, current_price, d1_atr, direction, conf, spread_pips=2.0)
                         
                         # Apply strategy lot multiplier (e.g. for VOLATILE regime)
                         lot = lot * lot_multiplier
@@ -476,7 +498,9 @@ class BacktestEngine:
                                 'direction': direction,
                                 'entry_price': current_price,
                                 'sl': sl,
-                                'tp': tp if not trailing_stop else None,
+                                'tp1': tp1,
+                                'tp2': tp2,
+                                'tp1_hit': False,
                                 'lot': lot,
                                 'conf': conf,
                                 'segment': current_segment,

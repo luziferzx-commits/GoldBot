@@ -22,14 +22,39 @@ class OnlineLearner:
         self.checkpoint_path = Path("models/learning/model_checkpoint_good.pt")
         
         # Performance tracking window
-        self.performance_window = collections.deque(maxlen=10)
+        self.performance_window = collections.deque(maxlen=20)
         self.consecutive_losses = 0
+        self.avg_atr = None
         
         if self.model is not None:
             # We only train the fully connected layer for fast online learning 
             # to prevent catastrophic forgetting of the LSTM's broader context
-            self.optimizer = optim.AdamW(self.model.fc.parameters(), lr=0.0001)
+            self.optimizer = optim.AdamW(self.model.fc.parameters(), lr=0.00005)
             self.criterion = AsymmetricLoss()
+
+    def _determine_target(self, direction: str, pnl: float, atr: float = None) -> int:
+        """
+        Determine target label (0=BUY, 1=SELL, 2=HOLD) based on trade outcome.
+        """
+        if atr is None:
+            if self.avg_atr is not None:
+                atr = self.avg_atr
+            else:
+                scratch_threshold = 2.0
+                big_loss_threshold = 8.0
+        
+        if atr is not None:
+            scratch_threshold = atr * 0.3
+            big_loss_threshold = atr * 0.8
+            
+        if pnl > 0:
+            return 0 if direction == "BUY" else 1
+        elif abs(pnl) < scratch_threshold:
+            return 2
+        elif abs(pnl) >= big_loss_threshold:
+            return 1 if direction == "BUY" else 0
+        else:
+            return 2
 
     def update(self, trade_result: dict, df_history: pd.DataFrame):
         """
@@ -37,7 +62,7 @@ class OnlineLearner:
         Rebuilds the features and performs a backward pass.
         
         Args:
-            trade_result (dict): Must contain 'entry_time', 'direction', 'net_pnl'
+            trade_result (dict): Must contain 'entry_time', 'direction', 'net_pnl' (optional 'atr')
             df_history (pd.DataFrame): Dataframe containing data up to entry_time
         """
         if self.model is None:
@@ -46,6 +71,13 @@ class OnlineLearner:
         entry_time = trade_result.get('entry_time')
         direction = trade_result.get('direction')
         pnl = trade_result.get('net_pnl', 0.0)
+        atr = trade_result.get('atr', None)
+        
+        if atr is not None:
+            if self.avg_atr is None:
+                self.avg_atr = atr
+            else:
+                self.avg_atr = 0.9 * self.avg_atr + 0.1 * atr
         
         if not entry_time or not direction:
             return
@@ -56,8 +88,6 @@ class OnlineLearner:
         if len(df_entry) < 60:
             return # Not enough data to build sequence
             
-        # Rebuild features (this will scale using the pre-fitted scaler if available)
-        # Note: in a pure live setting, scaler should be updated or loaded from state.
         features = self.builder.build_features(df_entry, fit_scaler=False)
         
         if features is None or len(features) == 0:
@@ -73,13 +103,7 @@ class OnlineLearner:
         tensor_x = tensor_x.to(device)
         
         # Determine the target label based on the outcome
-        # 0=BUY, 1=SELL, 2=HOLD
-        if pnl > 0:
-            # Trade was profitable, reinforce the direction taken
-            target = 0 if direction == "BUY" else 1
-        else:
-            # Trade was unprofitable, teach the model it should have held
-            target = 2
+        target = self._determine_target(direction, pnl, atr)
             
         target_tensor = torch.tensor([target], dtype=torch.long).to(device)
         
@@ -120,20 +144,15 @@ class OnlineLearner:
         """
         Evaluates recent performance and triggers rollback if degradation is detected.
         """
-        if len(self.performance_window) < 5:
-            # Need at least 5 trades to evaluate
+        if len(self.performance_window) < 10:
             return
             
         win_rate = sum(self.performance_window) / len(self.performance_window)
         
-        # Degradation conditions:
-        # 1. Win rate < 40% (0.4) over the tracked window
-        # 2. Or 3 consecutive losses
-        if win_rate < 0.40 or self.consecutive_losses >= 3:
+        if win_rate < 0.35 or self.consecutive_losses >= 4:
             logger.warning(f"Model degradation detected (Win Rate: {win_rate:.1%}, Consecutive Losses: {self.consecutive_losses}). Initiating rollback...")
             self.rollback()
-        elif win_rate >= 0.55:
-            # If model is performing well, save it as a good checkpoint
+        elif win_rate >= 0.60:
             self.save_checkpoint()
 
     def save_checkpoint(self):
@@ -148,14 +167,22 @@ class OnlineLearner:
             try:
                 self.model.load_state_dict(torch.load(self.checkpoint_path))
                 self.model.eval()
-                # Copy the checkpoint back to main model path so next load gets it
                 shutil.copy(self.checkpoint_path, self.model_path)
                 logger.info("Successfully rolled back to previous model checkpoint.")
                 
-                # Reset tracking to avoid continuous rollbacks
                 self.performance_window.clear()
                 self.consecutive_losses = 0
             except Exception as e:
                 logger.error(f"Failed to rollback model: {e}")
         else:
             logger.warning("Rollback requested but no checkpoint found!")
+
+    def get_status(self) -> dict:
+        win_rate = sum(self.performance_window) / len(self.performance_window) if len(self.performance_window) > 0 else 0.0
+        return {
+            "window_size": len(self.performance_window),
+            "win_rate": win_rate,
+            "consecutive_losses": self.consecutive_losses,
+            "avg_atr": self.avg_atr,
+            "checkpoint_exists": self.checkpoint_path.exists()
+        }

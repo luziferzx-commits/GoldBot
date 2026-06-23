@@ -142,6 +142,71 @@ class FeatureBuilder:
         
         return df.fillna(method='bfill').fillna(0)
 
+    def _compute_mtf_context(self, m5_index, h1_data: pd.DataFrame, daily_data: pd.DataFrame) -> pd.DataFrame:
+        df_mtf = pd.DataFrame(index=m5_index)
+        
+        # 1. Process H1
+        if h1_data is not None and len(h1_data) > 0:
+            h1 = h1_data.copy()
+            macd = ta.macd(h1['close'])
+            h1_trend_num = pd.Series(0, index=h1.index)
+            if macd is not None:
+                h1_trend_num[(macd['MACD_12_26_9'] > 0) & (macd['MACDh_12_26_9'] > 0)] = 1
+                h1_trend_num[(macd['MACD_12_26_9'] < 0) & (macd['MACDh_12_26_9'] < 0)] = -1
+                
+            ema21 = ta.ema(h1['close'], length=21)
+            atr14 = ta.atr(h1['high'], h1['low'], h1['close'], length=14)
+            if ema21 is None: ema21 = h1['close']
+            if atr14 is None: atr14 = pd.Series(1.0, index=h1.index)
+            h1_ema_slope = (ema21.diff() / atr14).clip(-3, 3).fillna(0)
+            h1_rsi_series = ta.rsi(h1['close'], length=14)
+            if h1_rsi_series is None: h1_rsi_series = pd.Series(50.0, index=h1.index)
+            h1_rsi = (h1_rsi_series / 100.0).fillna(0.5)
+            
+            h1_features = pd.DataFrame({
+                'h1_trend_num': h1_trend_num,
+                'h1_ema_slope': h1_ema_slope,
+                'h1_rsi': h1_rsi
+            })
+            h1_features.index = pd.to_datetime(h1_features.index, utc=True).tz_localize(None)
+            df_mtf = pd.merge_asof(df_mtf, h1_features, left_index=True, right_index=True, direction='backward')
+        else:
+            df_mtf['h1_trend_num'] = 0.0
+            df_mtf['h1_ema_slope'] = 0.0
+            df_mtf['h1_rsi'] = 0.5
+            
+        # 2. Process D1
+        if daily_data is not None and len(daily_data) > 0:
+            d1 = daily_data.copy()
+            
+            ema21_d1 = ta.ema(d1['close'], length=21)
+            if ema21_d1 is None: ema21_d1 = d1['close']
+            d1_bias_num = pd.Series(0, index=d1.index)
+            d1_bias_num[d1['close'] > ema21_d1] = 1
+            d1_bias_num[d1['close'] < ema21_d1] = -1
+            
+            atr14_d1 = ta.atr(d1['high'], d1['low'], d1['close'], length=14)
+            if atr14_d1 is None: atr14_d1 = pd.Series(1.0, index=d1.index)
+            daily_range = d1['high'] - d1['low']
+            d1_adr_pct = (daily_range / atr14_d1).clip(0, 2).fillna(0.5)
+            
+            d1_close_vs_ema = ((d1['close'] - ema21_d1) / atr14_d1).clip(-4, 4).fillna(0)
+            
+            d1_features = pd.DataFrame({
+                'd1_bias_num': d1_bias_num,
+                'd1_adr_pct': d1_adr_pct,
+                'd1_close_vs_ema': d1_close_vs_ema
+            })
+            
+            d1_features.index = pd.to_datetime(d1_features.index, utc=True).tz_localize(None)
+            df_mtf = pd.merge_asof(df_mtf, d1_features, left_index=True, right_index=True, direction='backward')
+        else:
+            df_mtf['d1_bias_num'] = 0.0
+            df_mtf['d1_adr_pct'] = 0.5
+            df_mtf['d1_close_vs_ema'] = 0.0
+            
+        return df_mtf.fillna(method='ffill').fillna(0)
+
     def build_features(
         self,
         m5_data: pd.DataFrame,
@@ -160,6 +225,10 @@ class FeatureBuilder:
             
         df = self._compute_base_features(m5_data)
         
+        # Add MTF context
+        df_mtf = self._compute_mtf_context(df.index, h1_data, daily_data)
+        df = df.join(df_mtf)
+        
         # Select columns to use as features (37 features total)
         feature_cols = [
             'close', 'EMA_9', 'EMA_21', 'EMA_50', 'RSI_14', 
@@ -173,7 +242,9 @@ class FeatureBuilder:
             'bear_flag_strength', 'nearest_ob_distance', 'ob_strength', 
             'asian_range_size', 'price_vs_asian_range',
             'similar_conditions_win_rate', 'seasonal_bias_score', 'hour_bias_score', 
-            'volatility_percentile', 'days_since_last_similar'
+            'volatility_percentile', 'days_since_last_similar',
+            'h1_trend_num', 'h1_ema_slope', 'h1_rsi', 
+            'd1_bias_num', 'd1_adr_pct', 'd1_close_vs_ema'
         ]
         
         # Also store these feature cols length to pass to model

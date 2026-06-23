@@ -24,7 +24,8 @@ def fetch_history():
         logger.error("Failed to connect to MT5")
         return
         
-    manager = TimeframeManager(client, settings['broker']['symbol'])
+    symbol = settings['broker'].get('symbols', [settings['broker'].get('symbol', 'XAUUSDm')])[0]
+    manager = TimeframeManager(client, symbol)
     
     # We fetch a huge amount of bars (e.g. 500,000) for comprehensive backtesting
     logger.info("Fetching up to 500,000 bars from MT5...")

@@ -60,13 +60,7 @@ class GoldBot:
         # Core Modules
         self.db = Database()
 
-        self.managers = {}
-        self.order_managers = {}
-        for sym in self.symbols:
-            self.managers[sym] = TimeframeManager(self.client, sym)
-            self.order_managers[sym] = OrderManager(self.client, self.db, sym)
-
-        
+        # MT5 Client & Symbols
         login_val = os.getenv('MT5_LOGIN', self.settings['broker'].get('login'))
         self.client = MT5Client(
             login=int(login_val) if login_val else 0,
@@ -74,6 +68,12 @@ class GoldBot:
             server=os.getenv('MT5_SERVER', self.settings['broker'].get('server'))
         )
         self.symbols = self.settings['broker'].get('symbols', [self.settings['broker'].get('symbol', 'XAUUSDm')])
+
+        self.managers = {}
+        self.order_managers = {}
+        for sym in self.symbols:
+            self.managers[sym] = TimeframeManager(self.client, sym)
+            self.order_managers[sym] = OrderManager(self.client, self.db, sym)
         
         
         
@@ -87,7 +87,8 @@ class GoldBot:
         self.sge_strategy = SGEStrategy(self.strategy)
         self.po3_strategy = PO3Strategy(self.strategy)
         self.overlap_scalper = OverlapScalper(self.strategy)
-        self.day_trade_strategy = DayTradeStrategy(self.strategy)
+        self.day_trade_strategy = DayTradeStrategy()
+        self.calendar = EconomicCalendar()
         self.news_straddle = NewsStraddleStrategy(self.calendar)
         
         # Strategy Selector
@@ -103,7 +104,6 @@ class GoldBot:
         
         # Filters
         self.risk_manager = RiskManager()
-        self.calendar = EconomicCalendar()
         self.learning_mode = LearningMode(is_learning=is_learning)
         self.external_factors = ExternalFactors()
         self.sentiment_analyzer = SentimentAnalyzer()

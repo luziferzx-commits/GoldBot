@@ -25,7 +25,7 @@ class TelegramNotifier:
                 settings = yaml.safe_load(f)
             self.token = os.getenv('TELEGRAM_BOT_TOKEN', settings['telegram'].get('bot_token', ''))
             self.chat_id = os.getenv('TELEGRAM_CHAT_ID', settings['telegram'].get('chat_id', ''))
-            self.symbol = settings['broker']['symbol']
+            self.symbol = settings['broker'].get('symbols', [settings['broker'].get('symbol', 'XAUUSDm')])[0]
         except Exception as e:
             logger.error(f"Failed to load telegram config: {e}")
             self.token = ""

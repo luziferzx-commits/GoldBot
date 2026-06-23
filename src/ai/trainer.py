@@ -10,7 +10,7 @@ from src.ai.model import GoldLSTM
 from src.ai.feature_builder import FeatureBuilder
 from src.ai.model_versioning import ModelVersioning
 from src.ai.xgboost_model import XGBoostModel
-from src.ai.dataset import SequenceDataset
+
 from src.data.timeframe_manager import TimeframeManager
 import pandas as pd
 from src.analysis.external_factors import ExternalFactors
@@ -150,84 +150,67 @@ class ModelTrainer:
         best_val_acc = 0.0
         best_model_state = None
         
+        model = GoldLSTM(input_size=n_features)
             
-            # 80% train, 20% val for the current walk-forward window
-            # A true walk forward expands the window or slides it.
-            # Here we slide the window for simplicity.
-            start_idx = fold * fold_size
-            end_idx = start_idx + fold_size if fold < folds - 1 else n_samples
-            
-            fold_X = X[start_idx:end_idx]
-            fold_y = y[start_idx:end_idx]
-            
-            split_idx = int(len(fold_X) * 0.8)
-            X_train, y_train = fold_X[:split_idx], fold_y[:split_idx]
-            X_val, y_val = fold_X[split_idx:], fold_y[split_idx:]
-            
-            train_loader = DataLoader(TensorDataset(X_train, y_train), batch_size=batch_size, shuffle=True)
-            val_loader = DataLoader(TensorDataset(X_val, y_val), batch_size=batch_size, shuffle=False)
-            
-            model = GoldLSTM(input_size=n_features)
-            
-            # Compute class weights to handle HOLD dominance
-            class_counts = torch.bincount(y_train, minlength=3).float()
-            # Add small epsilon to prevent division by zero
-            class_counts[class_counts == 0] = 1.0
-            weights = 1.0 / class_counts
-            weights = weights / weights.sum() * 3.0 # normalize
-            
-            optimizer = optim.AdamW(model.parameters(), lr=0.0005, weight_decay=1e-4)
-            scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=50)
-            criterion = nn.CrossEntropyLoss(weight=weights)
-            
-            patience = 15
-            patience_counter = 0
-            fold_best_acc = 0.0
-            
-            for epoch in range(epochs):
-                model.train()
-                train_loss = 0.0
-                for batch_x, batch_y in train_loader:
-                    optimizer.zero_grad()
-                    out = model(batch_x)
-                    loss = criterion(out, batch_y)
-                    loss.backward()
-                    
-                    # Gradient clipping
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-                    
-                    optimizer.step()
-                    train_loss += loss.item()
-                    
-                scheduler.step()
-                    
-                # Validation
-                model.eval()
-                val_loss = 0.0
-                correct = 0
-                with torch.no_grad():
-                    for batch_x, batch_y in val_loader:
-                        out = model(batch_x)
-                        val_loss += criterion(out, batch_y).item()
-                        preds = torch.argmax(out, dim=1)
-                        correct += (preds == batch_y).sum().item()
-                        
-                acc = correct / len(y_val)
-                logger.info(f"Epoch {epoch+1}: Train Loss={train_loss/len(train_loader):.4f}, Val Acc={acc:.4f}")
+        # Compute class weights to handle HOLD dominance
+        class_counts = torch.bincount(y_train_np, minlength=3).float()
+        # Add small epsilon to prevent division by zero
+        class_counts[class_counts == 0] = 1.0
+        weights = 1.0 / class_counts
+        weights = weights / weights.sum() * 3.0 # normalize
+        
+        optimizer = optim.AdamW(model.parameters(), lr=0.0005, weight_decay=1e-4)
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=50)
+        criterion = nn.CrossEntropyLoss(weight=weights)
+        
+        patience = 15
+        patience_counter = 0
+        fold_best_acc = 0.0
+        
+        for epoch in range(epochs):
+            model.train()
+            train_loss = 0.0
+            for batch_x, batch_y in train_loader:
+                optimizer.zero_grad()
+                out = model(batch_x)
+                loss = criterion(out, batch_y)
+                loss.backward()
                 
-                if acc > fold_best_acc:
-                    fold_best_acc = acc
-                    patience_counter = 0
-                    if acc > best_val_acc:
-                        best_val_acc = acc
-                        best_model_state = model.state_dict()
-                else:
-                    patience_counter += 1
+                # Gradient clipping
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                
+                optimizer.step()
+                train_loss += loss.item()
+                
+            scheduler.step()
+                
+            # Validation
+            model.eval()
+            val_loss = 0.0
+            correct = 0
+            with torch.no_grad():
+                for batch_x, batch_y in val_loader:
+                    out = model(batch_x)
+                    val_loss += criterion(out, batch_y).item()
+                    preds = torch.argmax(out, dim=1)
+                    correct += (preds == batch_y).sum().item()
                     
-                if patience_counter >= patience:
-                    logger.info(f"Early stopping at epoch {epoch+1}")
-                    break
-                    
+            acc = correct / len(y_val_np)
+            logger.info(f"Epoch {epoch+1}: Train Loss={train_loss/len(train_loader):.4f}, Val Acc={acc:.4f}")
+            
+            if acc > fold_best_acc:
+                fold_best_acc = acc
+                patience_counter = 0
+                if acc > best_val_acc:
+                    best_val_acc = acc
+                    best_model_state = model.state_dict()
+            else:
+                patience_counter += 1
+                
+            if patience_counter >= patience:
+                logger.info(f"Early stopping at epoch {epoch+1}")
+                break
+                
         # Save best model
         if best_model_state:
             metrics = {

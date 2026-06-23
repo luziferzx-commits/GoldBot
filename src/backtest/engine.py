@@ -262,10 +262,6 @@ class BacktestEngine:
         
         logger.info("Starting H1 walk-forward loop...")
         
-        # 3. ลด bars ที่ใช้ backtest
-        BACKTEST_BARS = 5000
-        h1 = h1.tail(BACKTEST_BARS)
-        
         # Walk-forward 5 segments
         total_bars = len(h1)
         segment_size = total_bars // 5

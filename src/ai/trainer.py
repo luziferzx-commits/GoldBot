@@ -136,10 +136,10 @@ class ModelTrainer:
         # 1. Train XGBoost Ensemble
         try:
             xgb_model = XGBoostModel()
-            # XGBoost needs 2D data: (samples, seq_len * features)
+            # XGBoost needs numpy arrays, not torch tensors
             ns, seq_len, nf = X_train_np.shape
-            X_train_xgb = X_train_np.reshape(ns, seq_len * nf)
-            X_val_xgb = X_val_np.reshape(X_val_np.shape[0], seq_len * nf)
+            X_train_xgb = X_train_np.numpy().reshape(ns, seq_len * nf)
+            X_val_xgb = X_val_np.numpy().reshape(X_val_np.shape[0], seq_len * nf)
             xgb_model.train(X_train_xgb, y_train_np.numpy(), X_val_xgb, y_val_np.numpy())
         except Exception as e:
             logger.error(f"XGBoost training failed: {e}")

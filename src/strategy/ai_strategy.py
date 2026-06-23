@@ -134,8 +134,10 @@ class AIStrategy(BaseStrategy):
                 
                 # Priority #4: AI Ensemble (Voter System)
                 if self.xgb_model.is_trained:
-                    # Flatten the sequence for XGBoost
-                    seq_np = seq.numpy().reshape(1, -1)
+                    if hasattr(seq, 'cpu'):
+                        seq_np = seq.cpu().numpy().reshape(1, -1)
+                    else:
+                        seq_np = seq.numpy().reshape(1, -1)
                     xgb_pred, xgb_conf = self.xgb_model.predict(seq_np)
                     xgb_direction = ["HOLD", "BUY", "SELL"][xgb_pred]
                     

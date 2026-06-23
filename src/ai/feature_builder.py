@@ -201,6 +201,9 @@ class FeatureBuilder:
         sequences_np = np.array(sequences)
         tensor = torch.tensor(sequences_np, dtype=torch.float32)
         
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        tensor = tensor.to(device)
+        
         return tensor
 
 if __name__ == "__main__":

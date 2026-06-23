@@ -86,9 +86,12 @@ class GoldLSTM(nn.Module):
             Tuple[str, float]: (direction, confidence)
         """
         self.eval()
+        device = next(self.parameters()).device
         with torch.no_grad():
             if tensor.dim() == 2:
                 tensor = tensor.unsqueeze(0) # Add batch dimension
+            
+            tensor = tensor.to(device)
                 
             logits = self(tensor)
             # Apply temperature scaling to artificially boost confidence 

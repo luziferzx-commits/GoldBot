@@ -262,6 +262,10 @@ class BacktestEngine:
         
         logger.info("Starting H1 walk-forward loop...")
         
+        # 3. ลด bars ที่ใช้ backtest
+        BACKTEST_BARS = 5000
+        h1 = h1.tail(BACKTEST_BARS)
+        
         # Walk-forward 5 segments
         total_bars = len(h1)
         segment_size = total_bars // 5
@@ -367,9 +371,9 @@ class BacktestEngine:
                 d1_atr = row.get('D1_ATR', 5.0)
                 
                 # Windows
-                m5_window = m5[m5.index <= timestamp]
-                m15_window = m15[m15.index <= timestamp]
-                h1_window = h1[h1.index <= timestamp]
+                m5_window = m5[m5.index <= timestamp].tail(500)
+                m15_window = m15[m15.index <= timestamp].tail(500)
+                h1_window = h1[h1.index <= timestamp].tail(500)
                 
                 if len(m5_window) < 50:
                     continue

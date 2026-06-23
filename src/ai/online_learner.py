@@ -51,7 +51,7 @@ class OnlineLearner:
             return
             
         # Get data strictly before/at entry time
-        df_entry = df_history[df_history.index <= entry_time].copy()
+        df_entry = df_history[df_history.index <= entry_time].tail(200).copy()
         
         if len(df_entry) < 60:
             return # Not enough data to build sequence
@@ -64,7 +64,13 @@ class OnlineLearner:
             return
             
         # The last sequence corresponds to the entry moment
-        tensor_x = torch.tensor(features[-1], dtype=torch.float32).unsqueeze(0) # Shape: (1, 60, features)
+        if isinstance(features, torch.Tensor):
+            tensor_x = features[-1].clone().detach().unsqueeze(0)
+        else:
+            tensor_x = torch.tensor(features[-1], dtype=torch.float32).unsqueeze(0)
+        
+        device = next(self.model.parameters()).device
+        tensor_x = tensor_x.to(device)
         
         # Determine the target label based on the outcome
         # 0=BUY, 1=SELL, 2=HOLD
@@ -75,7 +81,7 @@ class OnlineLearner:
             # Trade was unprofitable, teach the model it should have held
             target = 2
             
-        target_tensor = torch.tensor([target], dtype=torch.long)
+        target_tensor = torch.tensor([target], dtype=torch.long).to(device)
         
         self.model.train()
         self.optimizer.zero_grad()

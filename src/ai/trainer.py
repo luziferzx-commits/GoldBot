@@ -150,14 +150,17 @@ class ModelTrainer:
         best_val_acc = 0.0
         best_model_state = None
         
-        model = GoldLSTM(input_size=n_features)
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        logger.info(f"Training on: {device}")
+        
+        model = GoldLSTM(input_size=n_features).to(device)
             
         # Compute class weights to handle HOLD dominance
         class_counts = torch.bincount(y_train_np, minlength=3).float()
         # Add small epsilon to prevent division by zero
         class_counts[class_counts == 0] = 1.0
         weights = 1.0 / class_counts
-        weights = weights / weights.sum() * 3.0 # normalize
+        weights = (weights / weights.sum() * 3.0).to(device) # normalize and move to device
         
         optimizer = optim.AdamW(model.parameters(), lr=0.0005, weight_decay=1e-4)
         scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=50)
@@ -171,6 +174,7 @@ class ModelTrainer:
             model.train()
             train_loss = 0.0
             for batch_x, batch_y in train_loader:
+                batch_x, batch_y = batch_x.to(device), batch_y.to(device)
                 optimizer.zero_grad()
                 out = model(batch_x)
                 loss = criterion(out, batch_y)
@@ -190,6 +194,7 @@ class ModelTrainer:
             correct = 0
             with torch.no_grad():
                 for batch_x, batch_y in val_loader:
+                    batch_x, batch_y = batch_x.to(device), batch_y.to(device)
                     out = model(batch_x)
                     val_loss += criterion(out, batch_y).item()
                     preds = torch.argmax(out, dim=1)

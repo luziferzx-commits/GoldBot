@@ -140,8 +140,13 @@ class AIStrategy(BaseStrategy):
                     xgb_direction = ["HOLD", "BUY", "SELL"][xgb_pred]
                     
                     if pt_direction != xgb_direction and xgb_direction != "HOLD":
-                        logger.info(f"AI Ensemble Disagreement: PyTorch={pt_direction}, XGBoost={xgb_direction}. Returning HOLD.")
-                        return "HOLD", 0.0
+                        if pt_conf > 0.48:
+                            logger.info(f"AI Ensemble: PyTorch={pt_direction} (conf: {pt_conf:.2f}), XGBoost={xgb_direction}")
+                            logger.info("PyTorch confidence sufficient -> using PyTorch signal")
+                            return pt_direction, pt_conf
+                        else:
+                            logger.info(f"AI Ensemble Disagreement: PyTorch={pt_direction}, XGBoost={xgb_direction}. Returning HOLD.")
+                            return "HOLD", 0.0
                     
                     if pt_direction == xgb_direction and pt_direction != "HOLD":
                         # Boost confidence if both agree

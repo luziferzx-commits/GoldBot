@@ -16,6 +16,7 @@ class EconomicCalendar:
         self.events_df = pd.DataFrame()
         self.api_error = False
         self.last_fetch = None
+        self.CACHE_TTL = 21600  # 6 hours in seconds
 
     def fetch_news(self) -> bool:
         """
@@ -43,9 +44,10 @@ class EconomicCalendar:
             logger.info(f"Loaded {len(self.events_df)} news events.")
             return True
         except Exception as e:
-            logger.error(f"Failed to fetch economic calendar: {e}")
+            logger.warning(f"News API Error: {e}")
             self.api_error = True
-            self.last_fetch = datetime.utcnow() # Note the error time
+            self.last_fetch = datetime.utcnow()
+            self.events_df = pd.DataFrame()
             return False
 
     def is_news_time(self, minutes_before: int = 30, minutes_after: int = 15) -> bool:
@@ -59,13 +61,13 @@ class EconomicCalendar:
         Returns:
             bool: True if inside news restricted window, False otherwise.
         """
-        # Auto-refetch if older than 12 hours
-        if self.last_fetch is None or datetime.utcnow() - self.last_fetch > timedelta(hours=12):
+        # Auto-refetch if older than CACHE_TTL
+        if self.last_fetch is None or datetime.utcnow() - self.last_fetch > timedelta(seconds=self.CACHE_TTL):
             self.fetch_news()
             
         if self.api_error:
-            logger.warning("News API Error: Fallback mode active (Trading disabled)")
-            return True
+            # Fallback = No news = trade normally
+            return False
             
         if self.events_df.empty:
             return False

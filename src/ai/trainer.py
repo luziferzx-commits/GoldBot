@@ -6,7 +6,7 @@ from torch.utils.data import TensorDataset, DataLoader
 import numpy as np
 from datetime import datetime
 
-from src.ai.model import GoldLSTM
+from src.ai.model import GoldLSTM, AsymmetricLoss
 from src.ai.feature_builder import FeatureBuilder
 from src.ai.model_versioning import ModelVersioning
 from src.ai.xgboost_model import XGBoostModel
@@ -83,37 +83,38 @@ class ModelTrainer:
                 return False
             self.manager.save_to_csv()
             
-        h1_data = self.manager.get_data("H1")
-        if h1_data is None or len(h1_data) < 1000:
-            logger.error("Not enough H1 data.")
+        m5_data = self.manager.get_data("M5")
+        if m5_data is None or len(m5_data) < 1000:
+            logger.error("Not enough M5 data.")
             return False
             
         # Fetch external data
-        start_date = h1_data.index.min().strftime('%Y-%m-%d')
-        end_date = h1_data.index.max().strftime('%Y-%m-%d')
+        start_date = m5_data.index.min().strftime('%Y-%m-%d')
+        end_date = m5_data.index.max().strftime('%Y-%m-%d')
         self.external_factors.load_historical_data(start_date, end_date)
         
         if self.external_factors.hist_data is not None and not self.external_factors.hist_data.empty:
             ext_df = self.external_factors.hist_data.copy()
             ext_df.index = pd.to_datetime(ext_df.index, utc=True).tz_localize(None)
-            h1_data.index = pd.to_datetime(h1_data.index, utc=True).tz_localize(None) # Ensure datetime index
-            h1_data['date_only'] = h1_data.index.normalize()
-            h1_data = h1_data.merge(ext_df, left_on='date_only', right_index=True, how='left')
-            h1_data.drop(columns=['date_only'], inplace=True)
-            h1_data = h1_data.ffill().fillna(0.0)
-            h1_data['gold_bias'] = 0.0
-            h1_data['sentiment_score'] = 0.0
+            m5_data.index = pd.to_datetime(m5_data.index, utc=True).tz_localize(None) # Ensure datetime index
+            m5_data['date_only'] = m5_data.index.normalize()
+            m5_data = m5_data.merge(ext_df, left_on='date_only', right_index=True, how='left')
+            m5_data.drop(columns=['date_only'], inplace=True)
+
+            m5_data = m5_data.ffill().fillna(0.0)
+            m5_data['gold_bias'] = 0.0
+            m5_data['sentiment_score'] = 0.0
         else:
             for col in ['dxy_change', 'us10y_change', 'vix_level', 'oil_change', 'sp500_change', 'gold_bias', 'sentiment_score']:
-                h1_data[col] = 0.0
-                if col == 'vix_level': h1_data[col] = 15.0
+                m5_data[col] = 0.0
+                if col == 'vix_level': m5_data[col] = 15.0
             
         # Build features
-        X = self.builder.build_features(h1_data, fit_scaler=True)
+        X = self.builder.build_features(m5_data, fit_scaler=True)
         if X is None:
             return False
             
-        y = self.create_smart_labels(h1_data)
+        y = self.create_smart_labels(m5_data)
         
         # Ensure lengths match
         min_len = min(len(X), len(y))
@@ -164,7 +165,8 @@ class ModelTrainer:
         
         optimizer = optim.AdamW(model.parameters(), lr=0.0005, weight_decay=1e-4)
         scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=50)
-        criterion = nn.CrossEntropyLoss(weight=weights)
+        weights = torch.tensor([1.0, 1.5, 1.5], dtype=torch.float32).to(device)
+        criterion = AsymmetricLoss(ce_weights=weights)
         
         patience = 15
         patience_counter = 0

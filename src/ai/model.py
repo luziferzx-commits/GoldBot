@@ -110,6 +110,33 @@ class GoldLSTM(nn.Module):
             
             return direction, conf
 
+class AsymmetricLoss(nn.Module):
+    """
+    Custom Loss Function to penalize False Positives and Wrong Directions heavily.
+    """
+    def __init__(self, ce_weights=None):
+        super(AsymmetricLoss, self).__init__()
+        # reduction='none' so we can scale individual samples
+        self.ce = nn.CrossEntropyLoss(weight=ce_weights, reduction='none')
+        
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        loss = self.ce(logits, targets)
+        preds = torch.argmax(logits, dim=1)
+        
+        # classes: 0=BUY, 1=SELL, 2=HOLD
+        
+        # Penalize False Positives: predicted BUY/SELL but target is HOLD
+        # Multiply loss by 3
+        fp_mask = (preds != 2) & (targets == 2)
+        loss = torch.where(fp_mask, loss * 3.0, loss)
+        
+        # Penalize Wrong Direction: predicted BUY but target SELL, or vice versa
+        # Multiply loss by 3
+        wrong_dir_mask = ((preds == 0) & (targets == 1)) | ((preds == 1) & (targets == 0))
+        loss = torch.where(wrong_dir_mask, loss * 3.0, loss)
+        
+        return loss.mean()
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     # Test architecture

@@ -68,6 +68,22 @@ class AIStrategy(BaseStrategy):
         # Base filter checks (shared logic)
         current_price = m5_data.iloc[-1]['close'] if m5_data is not None else 0.0
         
+        # Dynamic Thresholding using H1 ATR
+        dynamic_threshold = self.conf_threshold
+        if h1_data is not None and len(h1_data) >= 14:
+            recent_highs = h1_data['high'].tail(14)
+            recent_lows = h1_data['low'].tail(14)
+            recent_atr = (recent_highs - recent_lows).mean()
+            
+            hist_atr = h1_data['ATR_14'].mean() if 'ATR_14' in h1_data.columns else 5.0
+            
+            if recent_atr > hist_atr * 1.5:
+                dynamic_threshold += 0.15
+                logger.debug(f"High Volatility! ATR {recent_atr:.2f} > {hist_atr*1.5:.2f}. Threshold -> {dynamic_threshold:.2f}")
+            elif recent_atr > hist_atr * 1.2:
+                dynamic_threshold += 0.05
+                logger.debug(f"Elevated Volatility! ATR {recent_atr:.2f} > {hist_atr*1.2:.2f}. Threshold -> {dynamic_threshold:.2f}")
+        
         monthly_trend = self.monthly_filter.evaluate(monthly_data)
         daily_bias, adr_pct = self.daily_filter.evaluate(daily_data, current_price)
         h1_trend = self.h1_filter.evaluate(h1_data)
@@ -76,18 +92,13 @@ class AIStrategy(BaseStrategy):
             return Signal("HOLD", 0.0, reason=f"ADR limit reached ({adr_pct:.1%})")
             
         # AI Prediction
-        ai_direction, ai_conf = self.get_raw_prediction(h1_data)
+        ai_direction, ai_conf = self.get_raw_prediction(m5_data)
                 
         # If AI is confident, use it, else Fallback
-        if ai_conf >= self.conf_threshold and ai_direction in ["BUY", "SELL"]:
+        if ai_conf >= dynamic_threshold and ai_direction in ["BUY", "SELL"]:
             
-            # Verify against higher TF filters
-            if monthly_trend != "SIDEWAYS" and ai_direction != monthly_trend:
-                return Signal("HOLD", 0.0, reason=f"AI {ai_direction} against Monthly {monthly_trend}")
-            
-            # Allow NEUTRAL for daily
-            if daily_bias != "NEUTRAL" and ai_direction != daily_bias:
-                return Signal("HOLD", 0.0, reason=f"AI {ai_direction} against Daily Bias {daily_bias}")
+            # Scalper Mode: Bypass Daily and Monthly filters!
+            # (We trade the 5-minute momentum, long-term trends do not matter)
                 
             m15_confirmed, m15_strength = self.m15_filter.evaluate(m15_data, ai_direction)
             
@@ -121,13 +132,13 @@ class AIStrategy(BaseStrategy):
             sig.reason += " (FALLBACK)"
             return sig
 
-    def get_raw_prediction(self, h1_data: pd.DataFrame) -> tuple[str, float]:
+    def get_raw_prediction(self, m5_data: pd.DataFrame) -> tuple[str, float]:
         """
         Returns raw (direction, confidence) from the AI model.
         Used by other strategies like Silver Bullet.
         """
         if self.model is not None:
-            tensor = self.feature_builder.build_features(h1_data)
+            tensor = self.feature_builder.build_features(m5_data)
             if tensor is not None and len(tensor) > 0:
                 seq = tensor[-1]
                 pt_direction, pt_conf = self.model.predict(seq)

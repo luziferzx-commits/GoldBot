@@ -221,8 +221,8 @@ class BacktestEngine:
 
         logger.info("Pre-computing AI Features...")
         fb = FeatureBuilder(seq_len=60)
-        # Using the feature builder logic inside builder
-        df_features = fb._compute_base_features(h1)
+        # We now compute features for M5 (the main dataset)
+        df_features = fb._compute_base_features(m5)
         feature_cols = [
             'close', 'EMA_9', 'EMA_21', 'EMA_50', 'RSI_14', 
             'MACD', 'MACD_hist', 'ATR_14', 'BB_upper', 'BB_lower', 
@@ -260,10 +260,12 @@ class BacktestEngine:
         weekly_pnl = 0.0
         stop_trading_today = False
         
-        logger.info("Starting H1 walk-forward loop...")
+        logger.info("Starting M5 walk-forward loop...")
+        
+        main_data = m5
         
         # Walk-forward 5 segments
-        total_bars = len(h1)
+        total_bars = len(main_data)
         segment_size = total_bars // 5
         current_segment = 1
 
@@ -276,8 +278,8 @@ class BacktestEngine:
                 logger.info(f"Completed Walk-Forward Segment {current_segment}")
                 current_segment += 1
 
-            row = h1.iloc[i].copy()
-            timestamp = h1.index[i]
+            row = main_data.iloc[i].copy()
+            timestamp = main_data.index[i]
             hour = timestamp.hour
             
             day = timestamp.date()
@@ -369,7 +371,9 @@ class BacktestEngine:
                 # Windows
                 m5_window = m5[m5.index <= timestamp].tail(500)
                 m15_window = m15[m15.index <= timestamp].tail(500)
-                h1_window = h1[h1.index <= timestamp].tail(500)
+                h1_window = h1[h1.index <= timestamp].tail(24)
+                daily_window = d1_raw[d1_raw.index <= timestamp.date()].tail(5)
+                monthly_window = mn1_aligned[mn1_aligned.index <= timestamp.date()].tail(2)
                 
                 if len(m5_window) < 50:
                     continue

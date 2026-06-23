@@ -6,7 +6,7 @@ import pandas as pd
 from pathlib import Path
 import shutil
 import collections
-from src.ai.model import GoldLSTM
+from src.ai.model import GoldLSTM, AsymmetricLoss
 from src.ai.feature_builder import FeatureBuilder
 
 logger = logging.getLogger(__name__)
@@ -29,7 +29,7 @@ class OnlineLearner:
             # We only train the fully connected layer for fast online learning 
             # to prevent catastrophic forgetting of the LSTM's broader context
             self.optimizer = optim.AdamW(self.model.fc.parameters(), lr=0.0001)
-            self.criterion = nn.CrossEntropyLoss()
+            self.criterion = AsymmetricLoss()
 
     def update(self, trade_result: dict, df_history: pd.DataFrame):
         """
